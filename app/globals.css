@@ -1,0 +1,45 @@
+.recommendation-row {
+  display: flex;
+  gap: 1rem;
+  overflow-x: auto;
+  padding: 0.5rem 0 1rem;
+}
+
+.recommendation-card {
+  display: flex;
+  flex: 0 0 150px;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.5rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.recommendation-card img,
+.poster-placeholder {
+  display: block;
+  width: 140px;
+  height: 210px;
+  object-fit: cover;
+  background: #e5e5e5;
+}
+
+.poster-placeholder {
+  align-content: center;
+  color: #555;
+  text-align: center;
+}
+
+.recommendation-card span {
+  font-size: 0.85rem;
+}
+
+.tmdb-attribution {
+  font-size: 0.8rem;
+}
+
+.tmdb-logo {
+  width: 32px;
+  height: 32px;
+  vertical-align: middle;
+}

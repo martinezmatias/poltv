@@ -21,7 +21,11 @@ type AgentDecision = {
   catalog_query?: CatalogQuery | null;
   catalog_retrieved?: boolean;
   catalog_candidates?: CatalogCandidate[];
+  catalog_retrieval_candidates?: CatalogCandidate[];
   catalog_error?: string | null;
+  conversation_revision?: number;
+  video_action_id?: string | null;
+  continuation_skipped?: boolean;
 };
 type CatalogQuery = {
   media_type: "movie" | "tv" | "both";
@@ -42,6 +46,9 @@ type CatalogCandidate = {
   vote_count: number;
   original_language: string;
   poster_path: string | null;
+  backdrop_path: string | null;
+  poster_url: string | null;
+  backdrop_url: string | null;
 };
 
 const MOCK_VIDEO_URL = "/resources/IhT_nkpXeYG8F9YsGbVH0_minimax-h3.mp4";
@@ -79,6 +86,8 @@ export default function Home() {
   const mediaReceivedRef = useRef(false);
   const connectedRef = useRef(false);
   const agentSessionIdRef = useRef("");
+  const activeClipActionRef = useRef<string | null>(null);
+  const continuationClaimedRef = useRef<Set<string>>(new Set());
   const [state, setState] = useState<ConnectionState>("Idle");
   const [sessionActive, setSessionActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -100,12 +109,16 @@ export default function Home() {
     retrieved: boolean;
     query: CatalogQuery | null;
     candidates: CatalogCandidate[];
+    retrievalCandidates: CatalogCandidate[];
     error: string | null;
   } | null>(null);
+  const [recommendations, setRecommendations] = useState<CatalogCandidate[]>([]);
   const [generatedInstruction, setGeneratedInstruction] = useState<string | null>(null);
   const [clipLoading, setClipLoading] = useState(false);
   const [clipStatus, setClipStatus] = useState<string | null>(null);
   const [clipError, setClipError] = useState<string | null>(null);
+  const [continuationLoading, setContinuationLoading] = useState(false);
+  const [continuationError, setContinuationError] = useState<string | null>(null);
 
   useEffect(() => () => {
     if (referencePreviewUrlRef.current) URL.revokeObjectURL(referencePreviewUrlRef.current);
@@ -151,6 +164,8 @@ export default function Home() {
     const session = sessionRef.current;
     sessionRef.current = null;
     const video = videoRef.current;
+    if (video) video.onended = null;
+    activeClipActionRef.current = null;
 
     if (!session && !sessionActive) return;
     setSessionActive(false);
@@ -182,12 +197,16 @@ export default function Home() {
     setSessionActive(true);
     setError(null);
     setDirectionFeedback(null);
+    if (videoRef.current) videoRef.current.onended = null;
+    activeClipActionRef.current = null;
     logEvent("Session start requested");
 
     if (videoMode !== "director") {
       const video = videoRef.current;
       if (!video) return;
 
+      video.onended = null;
+      activeClipActionRef.current = null;
       video.srcObject = null;
       video.src = MOCK_VIDEO_URL;
       video.loop = true;
@@ -306,7 +325,79 @@ export default function Home() {
     }
   };
 
-  const generateCinematicClip = async (instruction: string) => {
+  const continueAfterVideo = async (
+    actionId: string,
+    conversationRevision: number,
+    mode: "mock" | "text-to-video" | "image-to-video",
+    instruction: string,
+  ) => {
+    if (continuationClaimedRef.current.has(actionId)) return;
+    continuationClaimedRef.current.add(actionId);
+    setContinuationLoading(true);
+    setContinuationError(null);
+    logEvent("Post-video continuation requested");
+
+    try {
+      const response = await fetch(`${AGENT_API_URL}/continue-after-video`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: agentSessionIdRef.current,
+          video_action_id: actionId,
+          conversation_revision: conversationRevision,
+          mode,
+          video_instruction: instruction,
+        }),
+      });
+      const payload = (await response.json()) as AgentDecision & { detail?: string };
+      if (!response.ok) {
+        throw new Error(formatApiError(payload.detail ?? `Continuation failed (${response.status})`));
+      }
+      if (payload.continuation_skipped) {
+        logEvent("Post-video continuation skipped because the clip is stale or already handled");
+        return;
+      }
+      if (payload.update_video) {
+        throw new Error("Continuation attempted to request another video; request suppressed.");
+      }
+      setConversation((current) => [...current, { role: "assistant", content: payload.reply }]);
+      if (payload.catalog_retrieved || payload.catalog_error || payload.catalog_query) {
+        const catalogCandidates = payload.catalog_candidates ?? [];
+        const retrievalCandidates = payload.catalog_retrieval_candidates ?? catalogCandidates;
+        const catalogError = payload.catalog_error ?? null;
+        setCatalogDebug({
+          called: true,
+          retrieved: Boolean(payload.catalog_retrieved),
+          query: payload.catalog_query ?? null,
+          candidates: catalogCandidates,
+          retrievalCandidates,
+          error: catalogError,
+        });
+        if (payload.catalog_retrieved) setRecommendations(catalogCandidates);
+        logEvent(`TMDB called during continuation with input: ${JSON.stringify(payload.catalog_query ?? null)}`);
+        logEvent(
+          catalogError
+            ? `TMDB output error: ${catalogError}`
+            : `TMDB output during continuation: ${retrievalCandidates.length} retrieved, ${catalogCandidates.length} presented candidate(s)`,
+        );
+      }
+      logEvent("Post-video continuation received");
+    } catch (nextError) {
+      const message = nextError instanceof TypeError && nextError.message === "Failed to fetch"
+        ? `Agent backend unavailable at ${AGENT_API_URL}. Start FastAPI on port 8000.`
+        : nextError instanceof Error ? nextError.message : String(nextError);
+      setContinuationError(message);
+      logEvent(`Error: post-video continuation failed (${message})`);
+    } finally {
+      setContinuationLoading(false);
+    }
+  };
+
+  const generateCinematicClip = async (
+    instruction: string,
+    actionId: string,
+    conversationRevision: number,
+  ) => {
     if (clipLoading) {
       logEvent("Cinematic clip generation already in progress");
       return;
@@ -318,12 +409,13 @@ export default function Home() {
     logEvent("Cinematic clip generation requested");
 
     try {
+      const generationMethod = clipMethod;
       const clipConfig =
-        clipMethod === "image-to-video"
+        generationMethod === "image-to-video"
           ? VIDEO_CONFIG.cinematicClips.imageToVideo
           : VIDEO_CONFIG.cinematicClips.textToVideo;
 
-      if (clipMethod === "image-to-video" && !referenceImage) {
+      if (generationMethod === "image-to-video" && !referenceImage) {
         const message = "Image-to-Video requires a reference image before generating a clip.";
         setClipError(message);
         setClipStatus(null);
@@ -333,12 +425,12 @@ export default function Home() {
 
       const input: Record<string, unknown> = {
         prompt:
-          clipMethod === "image-to-video" ? buildImageToVideoPrompt(instruction) : instruction,
+          generationMethod === "image-to-video" ? buildImageToVideoPrompt(instruction) : instruction,
         duration: clipConfig.duration,
         resolution: clipConfig.resolution,
         prompt_expansion_mode: clipConfig.promptExpansionMode,
       };
-      if (clipMethod === "image-to-video") {
+      if (generationMethod === "image-to-video") {
         input.image_url = referenceImage;
       } else {
         input.aspect_ratio = VIDEO_CONFIG.cinematicClips.textToVideo.aspectRatio;
@@ -358,9 +450,19 @@ export default function Home() {
 
       const video = videoRef.current;
       if (video) {
+        activeClipActionRef.current = actionId;
         video.srcObject = null;
         video.src = videoUrl;
         video.loop = false;
+        video.onended = () => {
+          if (activeClipActionRef.current !== actionId) return;
+          void continueAfterVideo(
+            actionId,
+            conversationRevision,
+            generationMethod,
+            instruction,
+          );
+        };
         video.load();
         void video.play().catch(() => {
           setClipError("The browser blocked autoplay. Press the video play button.");
@@ -376,7 +478,12 @@ export default function Home() {
     }
   };
 
-  const sendVideoInstruction = (instruction: string, source: string) => {
+  const sendVideoInstruction = (
+    instruction: string,
+    source: string,
+    videoActionId?: string | null,
+    conversationRevision?: number,
+  ) => {
     const trimmedInstruction = instruction.trim();
     if (!trimmedInstruction) return;
 
@@ -387,11 +494,18 @@ export default function Home() {
       if (!sessionActive && state !== "Live") {
         startSession();
       }
+      if (videoActionId && conversationRevision !== undefined) {
+        void continueAfterVideo(videoActionId, conversationRevision, "mock", trimmedInstruction);
+      }
       return;
     }
 
     if (videoMode === "clips") {
-      void generateCinematicClip(trimmedInstruction);
+      if (!videoActionId || conversationRevision === undefined) {
+        setClipError("The video action is missing its conversation identity.");
+        return;
+      }
+      void generateCinematicClip(trimmedInstruction, videoActionId, conversationRevision);
       return;
     }
 
@@ -424,9 +538,11 @@ export default function Home() {
     sendVideoInstruction(trimmedDirection, "Raw");
   };
 
-  const sendMessage = async () => {
-    const trimmedMessage = messageInput.trim();
-    if (!trimmedMessage || agentLoading) return;
+  const sendMessage = async (selectedCandidate?: CatalogCandidate) => {
+    const trimmedMessage = selectedCandidate
+      ? `I'm interested in ${selectedCandidate.title}.`
+      : messageInput.trim();
+    if (!trimmedMessage || agentLoading || continuationLoading) return;
 
     if (!agentSessionIdRef.current) {
       agentSessionIdRef.current = crypto.randomUUID();
@@ -441,7 +557,17 @@ export default function Home() {
       const response = await fetch(`${AGENT_API_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: agentSessionIdRef.current, message: trimmedMessage }),
+        body: JSON.stringify({
+          session_id: agentSessionIdRef.current,
+          message: trimmedMessage,
+          selected_catalog: selectedCandidate
+            ? {
+                tmdb_id: selectedCandidate.tmdb_id,
+                media_type: selectedCandidate.media_type,
+                title: selectedCandidate.title,
+              }
+            : null,
+        }),
       });
 
       const payload = (await response.json()) as AgentDecision & { detail?: string };
@@ -456,26 +582,37 @@ export default function Home() {
       if (payload.catalog_retrieved || payload.catalog_error || payload.catalog_query) {
         const catalogQuery = payload.catalog_query ?? null;
         const catalogCandidates = payload.catalog_candidates ?? [];
+        const retrievalCandidates = payload.catalog_retrieval_candidates ?? catalogCandidates;
         const catalogError = payload.catalog_error ?? null;
         setCatalogDebug({
           called: true,
           retrieved: Boolean(payload.catalog_retrieved),
           query: catalogQuery,
           candidates: catalogCandidates,
+          retrievalCandidates,
           error: catalogError,
         });
+        if (payload.catalog_retrieved) setRecommendations(catalogCandidates);
         logEvent(`TMDB called with input: ${JSON.stringify(catalogQuery)}`);
         logEvent(
           catalogError
             ? `TMDB output error: ${catalogError}`
-            : `TMDB output: ${catalogCandidates.length} normalized candidate(s)`,
+            : `TMDB output: ${retrievalCandidates.length} retrieved, ${catalogCandidates.length} presented candidate(s)`,
         );
       }
       if (payload.update_video) {
         if (!payload.video_instruction) {
           throw new Error("Agent requested a video update without a video instruction.");
         }
-        sendVideoInstruction(payload.video_instruction, "Agent");
+        if (!payload.video_action_id || payload.conversation_revision === undefined) {
+          throw new Error("Agent video action is missing its conversation identity.");
+        }
+        sendVideoInstruction(
+          payload.video_instruction,
+          "Agent",
+          payload.video_action_id,
+          payload.conversation_revision,
+        );
       }
     } catch (nextError) {
       if (nextError instanceof TypeError && nextError.message === "Failed to fetch") {
@@ -590,13 +727,15 @@ export default function Home() {
           onChange={(event) => setMessageInput(event.target.value)}
           placeholder="Tell the assistant what you want to watch"
           rows={3}
-          disabled={agentLoading}
+          disabled={agentLoading || continuationLoading}
         />
         <p>
-          <button type="button" onClick={sendMessage} disabled={agentLoading || !messageInput.trim()}>
-            {agentLoading ? "Thinking..." : "Send"}
+          <button type="button" onClick={() => void sendMessage()} disabled={agentLoading || continuationLoading || !messageInput.trim()}>
+            {agentLoading ? "Thinking..." : continuationLoading ? "Continuing..." : "Send"}
           </button>
         </p>
+        {continuationLoading ? <p role="status">Continuing the recommendation...</p> : null}
+        {continuationError ? <p role="alert">Continuation error: {continuationError}</p> : null}
         {clipStatus ? <p role="status">{clipStatus}</p> : null}
         {clipError ? <p role="alert">Clip error: {clipError}</p> : null}
         {agentError ? <p role="alert">Agent error: {agentError}</p> : null}
@@ -620,7 +759,8 @@ export default function Home() {
               {
                 input: catalogDebug.query,
                 output: {
-                  candidates: catalogDebug.candidates,
+                  retrieval_candidates: catalogDebug.retrievalCandidates,
+                  presented_candidates: catalogDebug.candidates,
                   error: catalogDebug.error,
                 },
               },
@@ -629,6 +769,47 @@ export default function Home() {
             )}
           </pre>
         </details>
+      ) : null}
+
+      {recommendations.length > 0 ? (
+        <section>
+          <h2>Recommendations</h2>
+          <div className="recommendation-row">
+            {recommendations.map((candidate) => (
+              <button
+                className="recommendation-card"
+                type="button"
+                key={`${candidate.media_type}-${candidate.tmdb_id}`}
+                onClick={() => void sendMessage(candidate)}
+                disabled={agentLoading || continuationLoading}
+              >
+                {candidate.poster_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={candidate.poster_url} alt={`${candidate.title} poster`} />
+                ) : (
+                  <span className="poster-placeholder">No poster</span>
+                )}
+                <strong>{candidate.title}</strong>
+                <span>
+                  {candidate.media_type === "tv" ? "Series" : "Movie"}
+                  {candidate.year ? ` · ${candidate.year}` : ""}
+                </span>
+              </button>
+            ))}
+          </div>
+          <p className="tmdb-attribution">
+            <a href="https://www.themoviedb.org/about/logos-attribution" aria-label="TMDB attribution">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                className="tmdb-logo"
+                src="https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg"
+                alt="TMDB"
+              />
+            </a>{" "}
+            This product uses the <a href="https://www.themoviedb.org/">TMDB API</a> but is not endorsed or
+            certified by TMDB.
+          </p>
+        </section>
       ) : null}
 
       <details>

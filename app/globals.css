@@ -39,9 +39,9 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .profile-option strong { font-size:.78rem; }
 .profile-option small { color:var(--muted); font-size:.65rem; margin-top:2px; }
 .profile-option.selected { background:rgba(255,255,255,.06); }
-.conversation-intro { margin:clamp(56px,11vh,130px) 0 32px; max-width:360px; }
+.conversation-intro { margin:clamp(24px,6vh,72px) 0 6px; max-width:none; }
 .conversation-intro h1, .stage-caption h1 { font-family:"Playfair Display",Georgia,serif; font-weight:500; letter-spacing:-.025em; }
-.conversation-intro h1 { font-size:clamp(2rem,3.1vw,3.5rem); line-height:1.06; margin:12px 0 10px; }
+.conversation-intro h1 { font-size:clamp(1.35rem,2.4vw,2.7rem); line-height:1.06; white-space:nowrap; margin:0 0 6px; }
 .conversation-intro p { color:var(--muted); margin:0; font-size:.98rem; }
 .conversation-history { flex:1 1 auto; min-height:0; overflow-y:auto; padding-right:8px; scrollbar-width:thin; }
 .message { max-width:92%; margin:0 0 25px; animation:appear .35s ease both; }
@@ -121,7 +121,7 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
   .cinematic-mode .media-stage-region { min-height:62vh; }
   .discovery-mode .media-stage-region { flex-basis:58%; }
   .conversation-panel { height:58vh; min-height:58vh; border-right:0; border-top:1px solid var(--line); }
-  .conversation-intro { margin:42px 0 22px; }
+  .conversation-intro { margin:24px 0 8px; }
   .stage-caption { bottom:185px; }
   .pol-logo { width:78px; height:78px; }
   .stage-brand .stage-label { font-size:.8rem; }

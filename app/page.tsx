@@ -46,7 +46,8 @@ type CatalogQuery = {
 };
 type CatalogCandidate = ComponentCatalogCandidate;
 
-const MOCK_VIDEO_URL = "/resources/IhT_nkpXeYG8F9YsGbVH0_minimax-h3.mp4";
+const INTRO_VIDEO_URL = "/resources/Polintro.mp4";
+const MOCK_VIDEO_URL = "/resources/polconcassette5s.mp4";
 const AGENT_API_URL = process.env.NEXT_PUBLIC_AGENT_API_URL ?? "http://localhost:8000";
 
 const formatApiError = (value: unknown) => {
@@ -89,6 +90,7 @@ export default function Home() {
   const [sessionActive, setSessionActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [videoMode, setVideoMode] = useState<VideoMode>("mock");
+  const [activeVideoMode, setActiveVideoMode] = useState<VideoMode>("mock");
   const [clipMethod, setClipMethod] = useState<ClipMethod>("text-to-video");
   const [referenceImage, setReferenceImage] = useState<File | null>(null);
   const [referencePreviewUrl, setReferencePreviewUrl] = useState<string | null>(null);
@@ -121,8 +123,6 @@ export default function Home() {
   const [clipLoading, setClipLoading] = useState(false);
   const [clipStatus, setClipStatus] = useState<string | null>(null);
   const [clipError, setClipError] = useState<string | null>(null);
-  const [mediaDecisionStatus, setMediaDecisionStatus] = useState<string | null>(null);
-  const [mediaDecisionReason, setMediaDecisionReason] = useState<string | null>(null);
 
   useEffect(() => () => {
     if (referencePreviewUrlRef.current) URL.revokeObjectURL(referencePreviewUrlRef.current);
@@ -153,7 +153,7 @@ export default function Home() {
 
     sessionStartRef.current = performance.now();
     video.srcObject = null;
-    video.src = MOCK_VIDEO_URL;
+    video.src = INTRO_VIDEO_URL;
     video.loop = true;
     // The opening intro should autoplay without requiring a paid Director session.
     // Muting is required by most browsers for autoplay with an audio track.
@@ -162,11 +162,11 @@ export default function Home() {
     void video.play().then(
       () => {
         setSessionActive(true);
+        setActiveVideoMode("mock");
         setState("Live");
         logEvent("Intro media playing");
       },
       () => {
-        setError("Click Start experience to play the intro.");
         logEvent("Intro autoplay was blocked; waiting for user interaction");
       },
     );
@@ -215,8 +215,16 @@ export default function Home() {
     }
   };
 
+  const changeVideoMode = (nextMode: VideoMode) => {
+    if (nextMode === videoMode) return;
+    setError(null);
+    setClipError(null);
+    setVideoMode(nextMode);
+  };
+
   const startSession = () => {
-    if (sessionRef.current) return;
+    if (sessionRef.current && activeVideoMode === videoMode) return;
+    if (sessionRef.current || (sessionActive && activeVideoMode !== videoMode)) stopSession();
 
     sessionStartRef.current = performance.now();
     promptVersionRef.current = 1;
@@ -225,6 +233,7 @@ export default function Home() {
     setLogs([]);
     setState("Connecting");
     setSessionActive(true);
+    setActiveVideoMode(videoMode);
     setError(null);
     setDirectionFeedback(null);
     if (videoRef.current) videoRef.current.onended = null;
@@ -239,7 +248,7 @@ export default function Home() {
       activeClipActionRef.current = null;
       video.srcObject = null;
       video.muted = true;
-      video.src = MOCK_VIDEO_URL;
+      video.src = INTRO_VIDEO_URL;
       video.loop = true;
       video.load();
       void video.play().then(
@@ -456,9 +465,25 @@ export default function Home() {
 
     if (videoMode === "mock") {
       logEvent(`${source} produced video instruction (mock only)`);
-      setMediaDecisionStatus("Mock visual action applied");
-      if (!sessionActive && state !== "Live") {
-        startSession();
+      const video = videoRef.current;
+      if (video) {
+        video.pause();
+        video.srcObject = null;
+        video.muted = true;
+        video.src = MOCK_VIDEO_URL;
+        video.loop = false;
+        video.load();
+        void video.play().then(
+          () => {
+            setSessionActive(true);
+            setState("Live");
+            logEvent("Mock video playing");
+          },
+          (nextError) => {
+            setError(nextError instanceof Error ? nextError.message : String(nextError));
+            logEvent("Error: mock video could not play");
+          },
+        );
       }
       return;
     }
@@ -468,7 +493,6 @@ export default function Home() {
         setClipError("The video action is missing its conversation identity.");
         return;
       }
-      setMediaDecisionStatus("Creating cinematic clip...");
       void generateCinematicClip(trimmedInstruction, videoActionId, conversationRevision);
       return;
     }
@@ -491,7 +515,6 @@ export default function Home() {
       prompt_version: nextVersion,
     });
     logEvent(`${source} Director instruction ${nextVersion} submitted`);
-    setMediaDecisionStatus("Director update submitted");
     setDirectionFeedback(`Direction ${nextVersion} submitted.`);
   };
 
@@ -511,7 +534,7 @@ export default function Home() {
     latestCandidates: CatalogCandidate[],
     latestSelected: CatalogCandidate | null,
   ) => {
-    setMediaDecisionStatus("Pol is considering the visual mood...");
+    logEvent("Media Orchestrator requested");
     try {
       const response = await fetch(`${AGENT_API_URL}/media-orchestrate`, {
         method: "POST",
@@ -553,9 +576,7 @@ export default function Home() {
       });
       const payload = (await response.json()) as MediaDecision & { detail?: string };
       if (!response.ok) throw new Error(formatApiError(payload.detail ?? `Media Orchestrator failed (${response.status})`));
-      setMediaDecisionReason(payload.reason || null);
       if (payload.action === "none") {
-        setMediaDecisionStatus("No visual update needed");
         logEvent(`Media Orchestrator: none${payload.reason ? ` (${payload.reason})` : ""}`);
         return;
       }
@@ -568,7 +589,6 @@ export default function Home() {
       }
       activeMediaActionRef.current = payload.media_action_id;
       lastMediaRevisionRef.current = payload.conversation_revision;
-      setMediaDecisionStatus("Visual update selected");
       setGeneratedInstruction(payload.visual_instruction);
       logEvent(`Media Orchestrator: update (${payload.media_action_id})`);
       sendVideoInstruction(
@@ -581,8 +601,6 @@ export default function Home() {
       const message = nextError instanceof TypeError && nextError.message === "Failed to fetch"
         ? `Media Orchestrator unavailable at ${AGENT_API_URL}.`
         : nextError instanceof Error ? nextError.message : String(nextError);
-      setMediaDecisionStatus("Media update unavailable");
-      setMediaDecisionReason(message);
       logEvent(`Media Orchestrator error: ${message}`);
     }
   };
@@ -678,7 +696,7 @@ export default function Home() {
       <div className="settings-panel">
         <span className="eyebrow">Demo controls</span>
         <label>Visual mode
-          <select value={videoMode} onChange={(event) => setVideoMode(event.target.value as VideoMode)} disabled={state === "Connecting" || state === "Live"}>
+          <select value={videoMode} onChange={(event) => changeVideoMode(event.target.value as VideoMode)} disabled={state === "Connecting"}>
             <option value="mock">Mock</option>
             <option value="clips">Cinematic Clips</option>
             <option value="director">Director</option>
@@ -715,7 +733,7 @@ export default function Home() {
           </>
         ) : null}
         <div className="settings-actions">
-          <button type="button" className="primary-button" onClick={startSession} disabled={state === "Connecting" || state === "Live"}>Start experience</button>
+          <button type="button" className="primary-button" onClick={startSession} disabled={state === "Connecting" || (state === "Live" && activeVideoMode === videoMode)}>Start experience</button>
           <button type="button" className="secondary-button" onClick={stopSession} disabled={!sessionActive}>Stop session</button>
         </div>
         <details className="developer-details">
@@ -738,12 +756,10 @@ export default function Home() {
         <>
           <ProfileSelector />
           <div className="conversation-intro">
-            <span className="eyebrow">Your night, your story</span>
             <h1>{INITIAL_ASSISTANT_MESSAGE}</h1>
-            <p>Tell Pol what you&apos;re in the mood for.</p>
           </div>
           <div className="conversation-history" role="log" aria-live="polite">
-            {conversation.map((message, index) => (
+            {conversation.filter((message, index) => !(index === 0 && message.role === "assistant" && message.content === INITIAL_ASSISTANT_MESSAGE)).map((message, index) => (
               <article className={`message message-${message.role}`} key={`${message.role}-${index}`}>
                 <span className="message-label">{message.role === "assistant" ? "Pol" : "You"}</span>
                 <p>{message.content}</p>
@@ -762,8 +778,6 @@ export default function Home() {
               }} />
               <button type="button" className="send-button" aria-label="Send message" onClick={() => void sendMessage()} disabled={agentLoading || !messageInput.trim()}>↑</button>
             </div>
-            {mediaDecisionStatus ? <p className="status-note">{mediaDecisionStatus}</p> : null}
-            {mediaDecisionReason ? <details className="media-debug"><summary>Media decision</summary><p className="muted">{mediaDecisionReason}</p></details> : null}
             {clipStatus ? <p className="status-note">{clipStatus}</p> : null}
             {clipError ? <p role="alert" className="error-note">Clip error: {clipError}</p> : null}
             {agentError ? <p role="alert" className="error-note">Agent error: {agentError}</p> : null}

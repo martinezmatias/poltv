@@ -152,7 +152,8 @@ If port 3000 is already occupied, use the two-terminal workflow instead. The com
 
 Mock mode is selected by default. It plays:
 
-`public/resources/IhT_nkpXeYG8F9YsGbVH0_minimax-h3.mp4`
+`public/resources/Polintro.mp4` is used for the opening intro. Mock visual actions use
+`public/resources/polconcassette5s.mp4`.
 
 To test the conversation without paying for Director:
 

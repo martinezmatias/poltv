@@ -2,14 +2,11 @@
 
 import type { ReactNode, RefObject } from "react";
 import type { CatalogCandidate } from "./types";
-import { RecommendationRail } from "./RecommendationRail";
 
 type MediaStageProps = {
   videoRef: RefObject<HTMLVideoElement | null>;
   recommendations: CatalogCandidate[];
   selectedRecommendation: CatalogCandidate | null;
-  onSelectRecommendation: (candidate: CatalogCandidate) => void;
-  recommendationDisabled?: boolean;
   stageLabel: string;
   settings: ReactNode;
   showControls?: boolean;
@@ -19,8 +16,6 @@ export function MediaStage({
   videoRef,
   recommendations,
   selectedRecommendation,
-  onSelectRecommendation,
-  recommendationDisabled,
   stageLabel,
   settings,
   showControls = false,
@@ -48,11 +43,6 @@ export function MediaStage({
         <h1>Find your next world.</h1>
         <p>Tell us the feeling. We&apos;ll find the story.</p>
       </div>
-      <RecommendationRail
-        recommendations={recommendations}
-        onSelect={onSelectRecommendation}
-        disabled={recommendationDisabled}
-      />
     </div>
   );
 }

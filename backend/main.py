@@ -22,7 +22,7 @@ from prompt.catalog import (
     SELECTED_CANDIDATE_CONTEXT,
 )
 from prompt.system import INITIAL_ASSISTANT_MESSAGE, SYSTEM_PROMPT
-from prompt.continuation import POST_VIDEO_CONTINUATION_CONTEXT
+from prompt.media_orchestrator import MEDIA_ORCHESTRATOR_PROMPT
 
 load_dotenv()
 
@@ -36,9 +36,7 @@ class ConversationMessage(BaseModel):
 
 class AgentDecision(BaseModel):
     reply: str
-    update_video: bool
     suggestions: List[str] = Field(default_factory=list)
-    video_instruction: Optional[str] = None
     needs_catalog: bool = False
     catalog_query: Optional[CatalogQuery] = None
     presented_catalog: List[CatalogSelection] = Field(default_factory=list)
@@ -57,16 +55,37 @@ class ChatResponse(AgentDecision):
     catalog_retrieval_candidates: List[CatalogCandidate] = Field(default_factory=list)
     catalog_error: Optional[str] = None
     conversation_revision: int = 0
-    video_action_id: Optional[str] = None
-    continuation_skipped: bool = False
 
 
-class ContinuationRequest(BaseModel):
+class MediaOrchestratorState(BaseModel):
+    recent_messages: List[ConversationMessage] = Field(default_factory=list)
+    recent_candidates: List[CatalogCandidate] = Field(default_factory=list)
+    selected_catalog: Optional[CatalogSelection] = None
+    current_media_state: Literal["intro", "generated_clip", "director", "recommendations", "selected_title"] = "intro"
+    previous_visual_instruction: Optional[str] = None
+    generation_status: Literal["idle", "generating", "streaming"] = "idle"
+    director_active: bool = False
+    reference_image_available: bool = False
+    selected_backend: Literal["mock", "clips", "director"] = "mock"
+    conversation_revision: int = 0
+    last_media_revision: Optional[int] = None
+
+
+class MediaDecision(BaseModel):
+    action: Literal["none", "update"] = "none"
+    visual_instruction: Optional[str] = None
+    reason: str = ""
+
+
+class MediaOrchestratorRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=200)
-    video_action_id: str = Field(min_length=1, max_length=200)
-    conversation_revision: int = Field(ge=0)
-    mode: Literal["mock", "text-to-video", "image-to-video", "director"]
-    video_instruction: str = Field(min_length=1, max_length=10000)
+    state: MediaOrchestratorState
+
+
+class MediaOrchestratorResponse(MediaDecision):
+    session_id: str
+    conversation_revision: int
+    media_action_id: Optional[str] = None
 
 
 @dataclass
@@ -75,7 +94,8 @@ class ConversationSession:
     recent_candidates: List[CatalogCandidate] = field(default_factory=list)
     revision: int = 0
     pending_generations: Dict[str, int] = field(default_factory=dict)
-    completed_generations: set[str] = field(default_factory=set)
+    last_media_revision: Optional[int] = None
+    last_visual_instruction: Optional[str] = None
 
 
 class ConversationStore:
@@ -97,7 +117,8 @@ class ConversationStore:
                 recent_candidates=list(session.recent_candidates),
                 revision=session.revision,
                 pending_generations=dict(session.pending_generations),
-                completed_generations=set(session.completed_generations),
+                last_media_revision=session.last_media_revision,
+                last_visual_instruction=session.last_visual_instruction,
             )
 
     def append(self, session_id: str, *messages: ConversationMessage) -> None:
@@ -120,18 +141,11 @@ class ConversationStore:
             session.pending_generations[action_id] = session.revision
             return session.revision
 
-    def claim_continuation(self, session_id: str, action_id: str, expected_revision: int) -> bool:
+    def set_media_state(self, session_id: str, revision: int, instruction: str) -> None:
         with self._lock:
             session = self._sessions.setdefault(session_id, ConversationSession())
-            if action_id in session.completed_generations:
-                return False
-            if session.pending_generations.get(action_id) != expected_revision:
-                return False
-            if session.revision != expected_revision:
-                return False
-            session.pending_generations.pop(action_id, None)
-            session.completed_generations.add(action_id)
-            return True
+            session.last_media_revision = revision
+            session.last_visual_instruction = instruction
 
 
 app = FastAPI(title="BNAHack Conversational Agent")
@@ -242,42 +256,53 @@ def build_model_messages(
     return messages
 
 
-def request_agent(messages: List[dict[str, object]], json_object_mode: bool = False) -> AgentDecision:
+def request_agent(messages: List[dict[str, object]]) -> AgentDecision:
     try:
-        client = get_mistral_client()
-        if json_object_mode:
-            response = client.chat.complete(
-                response_format={"type": "json_object"},
-                model=os.getenv("MISTRAL_MODEL", DEFAULT_MODEL),
-                messages=messages,
-                temperature=0.2,
-            )
-        else:
-            response = client.chat.parse(
-                response_format=AgentDecision,
-                model=os.getenv("MISTRAL_MODEL", DEFAULT_MODEL),
-                messages=messages,
-                temperature=0.2,
-            )
+        response = get_mistral_client().chat.parse(
+            response_format=AgentDecision,
+            model=os.getenv("MISTRAL_MODEL", DEFAULT_MODEL),
+            messages=messages,
+            temperature=0.2,
+        )
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Mistral request failed: {format_exception(exc)}") from exc
 
     try:
-        message = response.choices[0].message
-        content = message.content if json_object_mode else message.parsed
+        content = response.choices[0].message.parsed
     except (AttributeError, IndexError, TypeError) as exc:
         raise HTTPException(status_code=502, detail="Mistral returned no assistant message") from exc
 
     return parse_decision(content)
 
 
+def request_media_orchestrator(messages: List[dict[str, object]]) -> MediaDecision:
+    try:
+        response = get_mistral_client().chat.parse(
+            response_format=MediaDecision,
+            model=os.getenv("MISTRAL_MODEL", DEFAULT_MODEL),
+            messages=messages,
+            temperature=0.1,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Media Orchestrator request failed: {format_exception(exc)}") from exc
+
+    try:
+        content = response.choices[0].message.parsed
+    except (AttributeError, IndexError, TypeError) as exc:
+        raise HTTPException(status_code=502, detail="Media Orchestrator returned no structured decision") from exc
+    if isinstance(content, MediaDecision):
+        return content
+    try:
+        return MediaDecision.model_validate(content)
+    except ValidationError as exc:
+        raise HTTPException(status_code=502, detail="Media Orchestrator returned an invalid decision") from exc
+
+
 def validate_decision(decision: AgentDecision) -> AgentDecision:
-    if not decision.update_video and decision.video_instruction is not None:
-        decision = decision.model_copy(update={"video_instruction": None})
-    if decision.update_video and not decision.video_instruction:
-        raise HTTPException(status_code=502, detail="Mistral requested a video update without an instruction")
     if not decision.needs_catalog and decision.catalog_query is not None:
         decision = decision.model_copy(update={"catalog_query": None})
     if decision.needs_catalog and decision.catalog_query is None:
@@ -340,113 +365,6 @@ def chat(request: ChatRequest) -> ChatResponse:
         user_message,
         ConversationMessage(role="assistant", content=decision.reply),
     )
-    conversation_revision = store.revision(request.session_id)
-    video_action_id: Optional[str] = None
-    if decision.update_video:
-        video_action_id = str(uuid4())
-        conversation_revision = store.register_generation(request.session_id, video_action_id)
-    response_data = decision.model_dump()
-    if retrieval_query is not None:
-        response_data["catalog_query"] = retrieval_query
-    return ChatResponse(
-        session_id=request.session_id,
-        **response_data,
-        catalog_retrieved=catalog_retrieved,
-        catalog_candidates=presented_candidates,
-        catalog_retrieval_candidates=candidates,
-        catalog_error=catalog_error,
-        conversation_revision=conversation_revision,
-        video_action_id=video_action_id,
-    )
-
-
-@app.post("/continue-after-video", response_model=ChatResponse)
-def continue_after_video(request: ContinuationRequest) -> ChatResponse:
-    if request.mode == "director":
-        raise HTTPException(status_code=409, detail="Automatic continuation is not supported for Director streams")
-    if not store.claim_continuation(
-        request.session_id, request.video_action_id, request.conversation_revision
-    ):
-        return ChatResponse(
-            session_id=request.session_id,
-            reply="",
-            update_video=False,
-            conversation_revision=store.revision(request.session_id),
-            continuation_skipped=True,
-        )
-
-    session = store.get_or_create(request.session_id)
-    generation_context = json.dumps(
-        {
-            "mode": request.mode,
-            "video_instruction": request.video_instruction,
-            "video_action_id": request.video_action_id,
-        },
-        ensure_ascii=False,
-    )
-    continuation_context = POST_VIDEO_CONTINUATION_CONTEXT.format(
-        generation_context=generation_context
-    )
-    decision = validate_decision(
-        request_agent(
-            build_model_messages(
-                session,
-                extra_system_contexts=[continuation_context],
-                assistant_prefix=True,
-            ),
-            json_object_mode=True,
-        )
-    )
-    # A continuation may advance recommendations, but can never start another video.
-    decision = decision.model_copy(update={"update_video": False, "video_instruction": None})
-
-    candidates: List[CatalogCandidate] = []
-    presented_candidates: List[CatalogCandidate] = []
-    catalog_error: Optional[str] = None
-    catalog_retrieved = False
-    retrieval_query: Optional[CatalogQuery] = None
-
-    if decision.needs_catalog and decision.catalog_query:
-        retrieval_query = decision.catalog_query
-        try:
-            candidates = get_tmdb_client().retrieve(decision.catalog_query)
-            catalog_retrieved = True
-            if not candidates:
-                catalog_error = "TMDB returned no matching titles"
-            else:
-                store.set_candidates(request.session_id, candidates)
-        except HTTPException as exc:
-            catalog_error = str(exc.detail)
-        except TMDBError as exc:
-            catalog_error = str(exc)
-
-        grounding_messages = build_model_messages(
-            session,
-            extra_system_contexts=[continuation_context],
-        )
-        grounding_messages.append({"role": "system", "content": catalog_context(candidates, catalog_error)})
-        grounding_messages.append({"role": "assistant", "content": "{", "prefix": True})
-        decision = validate_decision(request_agent(grounding_messages, json_object_mode=True))
-        decision = decision.model_copy(
-            update={
-                "update_video": False,
-                "video_instruction": None,
-                "needs_catalog": False,
-                "catalog_query": None,
-            }
-        )
-        candidate_by_key = {(candidate.media_type, candidate.tmdb_id): candidate for candidate in candidates}
-        presented_candidates = [
-            candidate_by_key[(selection.media_type, selection.tmdb_id)]
-            for selection in decision.presented_catalog
-            if (selection.media_type, selection.tmdb_id) in candidate_by_key
-        ]
-        if not presented_candidates:
-            presented_candidates = candidates[:3]
-        if presented_candidates:
-            store.set_candidates(request.session_id, presented_candidates)
-
-    store.append(request.session_id, ConversationMessage(role="assistant", content=decision.reply))
     response_data = decision.model_dump()
     if retrieval_query is not None:
         response_data["catalog_query"] = retrieval_query
@@ -458,6 +376,67 @@ def continue_after_video(request: ContinuationRequest) -> ChatResponse:
         catalog_retrieval_candidates=candidates,
         catalog_error=catalog_error,
         conversation_revision=store.revision(request.session_id),
+    )
+
+
+@app.post("/media-orchestrate", response_model=MediaOrchestratorResponse)
+def media_orchestrate(request: MediaOrchestratorRequest) -> MediaOrchestratorResponse:
+    state = request.state
+    current_revision = store.revision(request.session_id)
+    if state.conversation_revision != current_revision:
+        return MediaOrchestratorResponse(
+            session_id=request.session_id,
+            action="none",
+            visual_instruction=None,
+            reason="The orchestration state is stale.",
+            conversation_revision=current_revision,
+        )
+    state_messages = json.dumps([message.model_dump() for message in state.recent_messages], ensure_ascii=False)
+    state_candidates = json.dumps([candidate.model_dump() for candidate in state.recent_candidates], ensure_ascii=False)
+    state_context = json.dumps(state.model_dump(), ensure_ascii=False)
+    messages: List[dict[str, object]] = [
+        {"role": "system", "content": MEDIA_ORCHESTRATOR_PROMPT},
+        {
+            "role": "system",
+            "content": (
+                "Application state:\n"
+                f"{state_context}\n\n"
+                f"Recent conversation:\n{state_messages}\n\n"
+                f"Current catalog candidates:\n{state_candidates}"
+            ),
+        },
+    ]
+    try:
+        decision = request_media_orchestrator(messages)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Media Orchestrator failed: {format_exception(exc)}") from exc
+
+    if decision.action == "none":
+        return MediaOrchestratorResponse(
+            session_id=request.session_id,
+            conversation_revision=state.conversation_revision,
+            **decision.model_dump(),
+        )
+    if not decision.visual_instruction:
+        raise HTTPException(status_code=502, detail="Media Orchestrator returned update without visual_instruction")
+    if state.generation_status == "generating" and state.conversation_revision == state.last_media_revision:
+        decision = decision.model_copy(update={"action": "none", "visual_instruction": None, "reason": "A generation is already running for this state."})
+        return MediaOrchestratorResponse(
+            session_id=request.session_id,
+            conversation_revision=state.conversation_revision,
+            **decision.model_dump(),
+        )
+
+    action_id = str(uuid4())
+    store.set_media_state(request.session_id, state.conversation_revision, decision.visual_instruction)
+    store.register_generation(request.session_id, action_id)
+    return MediaOrchestratorResponse(
+        session_id=request.session_id,
+        conversation_revision=state.conversation_revision,
+        media_action_id=action_id,
+        **decision.model_dump(),
     )
 
 

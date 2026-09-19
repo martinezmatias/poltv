@@ -1,15 +1,16 @@
 # BNAHack 2026
 
-An experimental conversational TV prototype. The viewer watches a prerecorded, mocked, cinematic-clip, or live Director visual experience while a Mistral-powered assistant learns what they want to watch. When the agent decides that the viewer has provided enough direction, the browser sends a generated video instruction to the selected visual mode.
+An experimental conversational TV prototype. The viewer watches a prerecorded, mocked, cinematic-clip, or live Director visual experience while a Mistral-powered assistant learns what they want to watch. A separate Media Orchestrator may decide that a meaningful visual update would enrich the recommendation conversation.
 
 This repository currently contains:
 
 - Step 1A: start and display a MiniMax H3 Max Director WebRTC stream.
 - Step 1B: manually steer the active Director session without restarting it.
-- Step 2A: use Mistral through a small FastAPI backend to conduct a conversation and decide when a visual update is useful.
+- Step 2A: use Mistral through a small FastAPI backend to conduct a recommendation conversation.
 - Step 2B: manually select Mock, Cinematic Clips, or Director; Cinematic Clips supports MiniMax H3 Max Text-to-Video and Image-to-Video for independent short clips.
 - Step 3A: use TMDB-grounded retrieval for conversational movie and TV recommendations.
 - Step 3B: display the current TMDB recommendation set as selectable poster cards.
+- Step 3D: separate recommendation reasoning from Media Orchestrator decisions and media execution.
 
 Voice input, persistence, and later roadmap steps are not implemented.
 
@@ -28,8 +29,14 @@ Browser / Next.js
 FastAPI / Mistral
   ├── keeps in-memory conversation history by session_id
   ├── retrieves compact TMDB candidates when Mistral requests catalog grounding
-  └── returns reply, catalog data, update_video, and video_instruction
+  ├── returns recommendation reply, catalog data, and quick suggestions immediately
+  └── evaluates media separately through the Media Orchestrator
 ```
+
+The Recommendation Agent only handles conversation and catalog recommendations. The
+Media Orchestrator separately decides whether a meaningful visual update is useful;
+the browser harness then executes that backend-neutral instruction through the
+manually selected Mock, Cinematic Clips, or Director mode.
 
 The live Director integration uses fal's realtime WMA/WebRTC contract at `minimax/h3-max/director`. The browser uses the server proxy at `/api/fal/proxy`; the fal key is never sent to client code.
 
@@ -160,7 +167,7 @@ To test the conversation without paying for Director:
 4. Send a natural-language request.
 5. FastAPI sends the conversation to Mistral.
 6. The assistant reply appears in the conversation.
-7. If Mistral returns `update_video=true`, the generated video instruction is shown in the debug section and logged, but fal is not called.
+7. If the Media Orchestrator returns `action=update`, the visual intent is shown in the developer settings and Mock mode logs it without calling fal.
 
 The mock MP4 is fixed, so it does not visually react to generated instructions.
 
@@ -173,7 +180,7 @@ Cinematic Clips supports manually selected Text-to-Video and Image-to-Video gene
 1. Select **Cinematic Clips**.
 2. Click **Start** if you want the prerecorded Pol intro playing while the conversation begins.
 3. Continue the Mistral conversation normally.
-4. When Mistral returns `update_video=true`, the browser submits the generated `video_instruction` using the selected method's settings in `config/video.ts`.
+4. When the Media Orchestrator returns `action=update`, the browser submits its backend-neutral `visual_instruction` using the selected method's settings in `config/video.ts`.
 5. While fal processes the request, the UI shows queued/generating status. The completed CDN video replaces the intro or previous clip in the main player.
 
 The conversation remains usable while a clip is generating. A second clip request is ignored until the current one completes.
@@ -190,7 +197,7 @@ To use the real stream:
 2. Click **Start**.
 3. Wait for the Director status to become `Live`.
 4. Use the conversational input to describe what you want to watch.
-5. When the agent returns `update_video=true`, the browser sends the returned instruction to the existing Director session.
+5. When the Media Orchestrator returns `action=update`, the browser sends the visual instruction to the existing Director session.
 6. Use **Stop Session** to close the WebRTC session and release its resources.
 
 For development cost control, the current test session automatically stops after 60 seconds. Director sessions have fal-specific pricing and minimum charges; check the [current fal Director page](https://fal.ai/h3-max-director) before running live tests.
@@ -208,7 +215,7 @@ FastAPI exposes:
 ```text
 GET  /health
 POST /chat
-POST /continue-after-video
+POST /media-orchestrate
 ```
 
 Request body for `/chat`:
@@ -218,6 +225,7 @@ Request body for `/chat`:
   "session_id": "browser-session-id",
   "message": "Something exciting."
 }
+```
 
 Response body:
 
@@ -225,40 +233,33 @@ Response body:
 {
   "session_id": "browser-session-id",
   "reply": "Action, thriller, adventure... or something else?",
-  "update_video": false,
-  "video_instruction": null,
+  "suggestions": ["Something funny", "A darker mystery"],
   "needs_catalog": false,
   "catalog_retrieved": false,
-  "catalog_candidates": []
+  "catalog_candidates": [],
+  "conversation_revision": 1
 }
 ```
 
-When a video update is justified:
+The browser then calls `/media-orchestrate` independently with the relevant
+conversation, catalog, media, backend, reference-image, and revision state. Its
+response is:
 
 ```json
 {
   "session_id": "browser-session-id",
-  "reply": "Let's make it light and action-packed.",
-  "update_video": true,
-  "video_instruction": "Pol chooses an action VHS and transitions naturally into a bright, fast-paced action world while preserving visual continuity."
+  "action": "update",
+  "visual_instruction": "An original lighthearted action adventure in a colorful coastal town...",
+  "reason": "The preferences have become specific enough for a visual mood update.",
+  "conversation_revision": 3,
+  "media_action_id": "..."
 }
 ```
 
-The backend validates this response with the Pydantic `AgentDecision` model. Conversation history is stored in memory only and is lost when FastAPI restarts.
-
-When a finite Text-to-Video or Image-to-Video clip completes playback, the browser
-calls `/continue-after-video` with the generated action ID, conversation revision,
-mode, and video instruction. FastAPI performs a continuation-only Mistral turn using
-the existing history. That turn may ask a follow-up question or retrieve TMDB
-recommendations, but its response is forced to `update_video=false`, so it cannot
-start an autonomous video-generation loop. The browser appends the continuation as
-an assistant message and updates recommendation cards normally.
-
-The backend rejects duplicate or stale clip completions. If the viewer sends a new
-message before an older clip ends, that older clip's continuation is skipped. Mock
-mode simulates clip completion immediately without calling fal. Director remains a
-continuous stream and has no reliable ended event, so steering does not automatically
-trigger this continuation; its existing manual/live behavior is preserved.
+Both responses are validated with Pydantic models. Recommendation replies are not
+blocked by orchestration or fal generation. Conversation revisions and media action
+IDs prevent stale results from replacing newer media state. Conversation history is
+stored in memory only and is lost when FastAPI restarts.
 
 ## TMDB catalog grounding
 
@@ -295,7 +296,7 @@ Model prompts are kept outside the application logic:
 - `prompt/initial.ts` — initial Director scene.
 - `prompt/assistant.ts` — deterministic opening assistant message.
 - `prompt/system.py` — Mistral system prompt and backend assistant-message resource.
-- `prompt/continuation.py` — explicit post-video continuation instructions.
+- `prompt/media_orchestrator.py` — conservative visual-update decision prompt.
 
 ## Video configuration
 
@@ -325,7 +326,7 @@ Action, but something fun rather than serious.
 Now make it more mysterious while keeping the same world.
 ```
 
-The model should be capable of asking for clarification first and later returning a structured Director update. Exact wording and the exact turn at which it updates are intentionally model-dependent.
+The Recommendation Agent should be capable of asking for clarification first. The separate Media Orchestrator conservatively decides whether a visual update is useful; exact timing is intentionally model-dependent.
 
 ## Troubleshooting
 

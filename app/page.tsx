@@ -11,6 +11,7 @@ import { CinematicShell } from "./components/CinematicShell";
 import { MediaStage } from "./components/MediaStage";
 import { ProfileSelector } from "./components/ProfileSelector";
 import { QuickSuggestions } from "./components/QuickSuggestions";
+import { RecommendationRail } from "./components/RecommendationRail";
 import type { CatalogCandidate as ComponentCatalogCandidate } from "./components/types";
 
 type ConnectionState = "Idle" | "Connecting" | "Live" | "Error";
@@ -21,8 +22,6 @@ type ConversationMessage = { role: "user" | "assistant"; content: string };
 type AgentDecision = {
   reply: string;
   suggestions?: string[];
-  update_video: boolean;
-  video_instruction: string | null;
   needs_catalog?: boolean;
   catalog_query?: CatalogQuery | null;
   catalog_retrieved?: boolean;
@@ -30,8 +29,13 @@ type AgentDecision = {
   catalog_retrieval_candidates?: CatalogCandidate[];
   catalog_error?: string | null;
   conversation_revision?: number;
-  video_action_id?: string | null;
-  continuation_skipped?: boolean;
+};
+type MediaDecision = {
+  action: "none" | "update";
+  visual_instruction: string | null;
+  reason: string;
+  conversation_revision: number;
+  media_action_id: string | null;
 };
 type CatalogQuery = {
   media_type: "movie" | "tv" | "both";
@@ -78,7 +82,9 @@ export default function Home() {
   const connectedRef = useRef(false);
   const agentSessionIdRef = useRef("");
   const activeClipActionRef = useRef<string | null>(null);
-  const continuationClaimedRef = useRef<Set<string>>(new Set());
+  const currentConversationRevisionRef = useRef(0);
+  const activeMediaActionRef = useRef<string | null>(null);
+  const lastMediaRevisionRef = useRef<number | null>(null);
   const [state, setState] = useState<ConnectionState>("Idle");
   const [sessionActive, setSessionActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -115,8 +121,8 @@ export default function Home() {
   const [clipLoading, setClipLoading] = useState(false);
   const [clipStatus, setClipStatus] = useState<string | null>(null);
   const [clipError, setClipError] = useState<string | null>(null);
-  const [continuationLoading, setContinuationLoading] = useState(false);
-  const [continuationError, setContinuationError] = useState<string | null>(null);
+  const [mediaDecisionStatus, setMediaDecisionStatus] = useState<string | null>(null);
+  const [mediaDecisionReason, setMediaDecisionReason] = useState<string | null>(null);
 
   useEffect(() => () => {
     if (referencePreviewUrlRef.current) URL.revokeObjectURL(referencePreviewUrlRef.current);
@@ -142,6 +148,31 @@ export default function Home() {
   };
 
   useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    sessionStartRef.current = performance.now();
+    video.srcObject = null;
+    video.src = MOCK_VIDEO_URL;
+    video.loop = true;
+    // The opening intro should autoplay without requiring a paid Director session.
+    // Muting is required by most browsers for autoplay with an audio track.
+    video.muted = true;
+    video.load();
+    void video.play().then(
+      () => {
+        setSessionActive(true);
+        setState("Live");
+        logEvent("Intro media playing");
+      },
+      () => {
+        setError("Click Start experience to play the intro.");
+        logEvent("Intro autoplay was blocked; waiting for user interaction");
+      },
+    );
+  }, []);
+
+  useEffect(() => {
     return () => {
       if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
       const session = sessionRef.current;
@@ -164,6 +195,7 @@ export default function Home() {
     const video = videoRef.current;
     if (video) video.onended = null;
     activeClipActionRef.current = null;
+    activeMediaActionRef.current = null;
 
     if (!session && !sessionActive) return;
     setSessionActive(false);
@@ -206,6 +238,7 @@ export default function Home() {
       video.onended = null;
       activeClipActionRef.current = null;
       video.srcObject = null;
+      video.muted = true;
       video.src = MOCK_VIDEO_URL;
       video.loop = true;
       video.load();
@@ -224,6 +257,8 @@ export default function Home() {
     }
 
     try {
+      const video = videoRef.current;
+      if (video) video.muted = false;
       const session = fal.realtime.open(wma("minimax/h3-max/director"), {
         receive: ["video", "audio"],
         onMedia: (stream) => {
@@ -323,75 +358,6 @@ export default function Home() {
     }
   };
 
-  const continueAfterVideo = async (
-    actionId: string,
-    conversationRevision: number,
-    mode: "mock" | "text-to-video" | "image-to-video",
-    instruction: string,
-  ) => {
-    if (continuationClaimedRef.current.has(actionId)) return;
-    continuationClaimedRef.current.add(actionId);
-    setContinuationLoading(true);
-    setContinuationError(null);
-    logEvent("Post-video continuation requested");
-
-    try {
-      const response = await fetch(`${AGENT_API_URL}/continue-after-video`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: agentSessionIdRef.current,
-          video_action_id: actionId,
-          conversation_revision: conversationRevision,
-          mode,
-          video_instruction: instruction,
-        }),
-      });
-      const payload = (await response.json()) as AgentDecision & { detail?: string };
-      if (!response.ok) {
-        throw new Error(formatApiError(payload.detail ?? `Continuation failed (${response.status})`));
-      }
-      if (payload.continuation_skipped) {
-        logEvent("Post-video continuation skipped because the clip is stale or already handled");
-        return;
-      }
-      if (payload.update_video) {
-        throw new Error("Continuation attempted to request another video; request suppressed.");
-      }
-      setConversation((current) => [...current, { role: "assistant", content: payload.reply }]);
-      setSuggestions(payload.suggestions ?? []);
-      if (payload.catalog_retrieved || payload.catalog_error || payload.catalog_query) {
-        const catalogCandidates = payload.catalog_candidates ?? [];
-        const retrievalCandidates = payload.catalog_retrieval_candidates ?? catalogCandidates;
-        const catalogError = payload.catalog_error ?? null;
-        setCatalogDebug({
-          called: true,
-          retrieved: Boolean(payload.catalog_retrieved),
-          query: payload.catalog_query ?? null,
-          candidates: catalogCandidates,
-          retrievalCandidates,
-          error: catalogError,
-        });
-        if (payload.catalog_retrieved) setRecommendations(catalogCandidates);
-        logEvent(`TMDB called during continuation with input: ${JSON.stringify(payload.catalog_query ?? null)}`);
-        logEvent(
-          catalogError
-            ? `TMDB output error: ${catalogError}`
-            : `TMDB output during continuation: ${retrievalCandidates.length} retrieved, ${catalogCandidates.length} presented candidate(s)`,
-        );
-      }
-      logEvent("Post-video continuation received");
-    } catch (nextError) {
-      const message = nextError instanceof TypeError && nextError.message === "Failed to fetch"
-        ? `Agent backend unavailable at ${AGENT_API_URL}. Start FastAPI on port 8000.`
-        : nextError instanceof Error ? nextError.message : String(nextError);
-      setContinuationError(message);
-      logEvent(`Error: post-video continuation failed (${message})`);
-    } finally {
-      setContinuationLoading(false);
-    }
-  };
-
   const generateCinematicClip = async (
     instruction: string,
     actionId: string,
@@ -444,6 +410,14 @@ export default function Home() {
         },
       });
       const videoUrl = result.data.video.url;
+      if (
+        currentConversationRevisionRef.current !== conversationRevision ||
+        activeMediaActionRef.current !== actionId
+      ) {
+        logEvent(`Stale media action ${actionId} suppressed before playback`);
+        setClipStatus(null);
+        return;
+      }
       setClipStatus("Cinematic clip ready");
       logEvent("Cinematic clip ready");
 
@@ -453,15 +427,7 @@ export default function Home() {
         video.srcObject = null;
         video.src = videoUrl;
         video.loop = false;
-        video.onended = () => {
-          if (activeClipActionRef.current !== actionId) return;
-          void continueAfterVideo(
-            actionId,
-            conversationRevision,
-            generationMethod,
-            instruction,
-          );
-        };
+        video.onended = null;
         video.load();
         void video.play().catch(() => {
           setClipError("The browser blocked autoplay. Press the video play button.");
@@ -490,11 +456,9 @@ export default function Home() {
 
     if (videoMode === "mock") {
       logEvent(`${source} produced video instruction (mock only)`);
+      setMediaDecisionStatus("Mock visual action applied");
       if (!sessionActive && state !== "Live") {
         startSession();
-      }
-      if (videoActionId && conversationRevision !== undefined) {
-        void continueAfterVideo(videoActionId, conversationRevision, "mock", trimmedInstruction);
       }
       return;
     }
@@ -504,6 +468,7 @@ export default function Home() {
         setClipError("The video action is missing its conversation identity.");
         return;
       }
+      setMediaDecisionStatus("Creating cinematic clip...");
       void generateCinematicClip(trimmedInstruction, videoActionId, conversationRevision);
       return;
     }
@@ -526,6 +491,7 @@ export default function Home() {
       prompt_version: nextVersion,
     });
     logEvent(`${source} Director instruction ${nextVersion} submitted`);
+    setMediaDecisionStatus("Director update submitted");
     setDirectionFeedback(`Direction ${nextVersion} submitted.`);
   };
 
@@ -537,11 +503,95 @@ export default function Home() {
     sendVideoInstruction(trimmedDirection, "Raw");
   };
 
+  const requestMediaOrchestration = async (
+    conversationRevision: number,
+    userMessage: string,
+    assistantReply: string,
+    recentMessages: ConversationMessage[],
+    latestCandidates: CatalogCandidate[],
+    latestSelected: CatalogCandidate | null,
+  ) => {
+    setMediaDecisionStatus("Pol is considering the visual mood...");
+    try {
+      const response = await fetch(`${AGENT_API_URL}/media-orchestrate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: agentSessionIdRef.current,
+          state: {
+            recent_messages: [
+              ...recentMessages,
+              { role: "user", content: userMessage },
+              { role: "assistant", content: assistantReply },
+            ].slice(-8),
+            recent_candidates: latestCandidates,
+            selected_catalog: latestSelected
+              ? {
+                  tmdb_id: latestSelected.tmdb_id,
+                  media_type: latestSelected.media_type,
+                  title: latestSelected.title,
+                }
+              : null,
+            current_media_state: videoMode === "clips" && generatedInstruction
+              ? "generated_clip"
+              : latestSelected
+                ? "selected_title"
+                : recommendations.length > 0
+                  ? "recommendations"
+                  : videoMode === "director"
+                    ? "director"
+                    : "intro",
+            previous_visual_instruction: generatedInstruction,
+            generation_status: clipLoading ? "generating" : state === "Live" && videoMode === "director" ? "streaming" : "idle",
+            director_active: videoMode === "director" && state === "Live",
+            reference_image_available: Boolean(referenceImage),
+            selected_backend: videoMode,
+            conversation_revision: conversationRevision,
+            last_media_revision: lastMediaRevisionRef.current,
+          },
+        }),
+      });
+      const payload = (await response.json()) as MediaDecision & { detail?: string };
+      if (!response.ok) throw new Error(formatApiError(payload.detail ?? `Media Orchestrator failed (${response.status})`));
+      setMediaDecisionReason(payload.reason || null);
+      if (payload.action === "none") {
+        setMediaDecisionStatus("No visual update needed");
+        logEvent(`Media Orchestrator: none${payload.reason ? ` (${payload.reason})` : ""}`);
+        return;
+      }
+      if (!payload.visual_instruction || !payload.media_action_id) {
+        throw new Error("Media Orchestrator returned an incomplete update action.");
+      }
+      if (currentConversationRevisionRef.current !== payload.conversation_revision) {
+        logEvent(`Stale Media Orchestrator action ${payload.media_action_id} suppressed`);
+        return;
+      }
+      activeMediaActionRef.current = payload.media_action_id;
+      lastMediaRevisionRef.current = payload.conversation_revision;
+      setMediaDecisionStatus("Visual update selected");
+      setGeneratedInstruction(payload.visual_instruction);
+      logEvent(`Media Orchestrator: update (${payload.media_action_id})`);
+      sendVideoInstruction(
+        payload.visual_instruction,
+        "Media Orchestrator",
+        payload.media_action_id,
+        payload.conversation_revision,
+      );
+    } catch (nextError) {
+      const message = nextError instanceof TypeError && nextError.message === "Failed to fetch"
+        ? `Media Orchestrator unavailable at ${AGENT_API_URL}.`
+        : nextError instanceof Error ? nextError.message : String(nextError);
+      setMediaDecisionStatus("Media update unavailable");
+      setMediaDecisionReason(message);
+      logEvent(`Media Orchestrator error: ${message}`);
+    }
+  };
+
   const sendMessage = async (selectedCandidate?: CatalogCandidate, suggestedMessage?: string) => {
     const trimmedMessage = selectedCandidate
       ? `I'm interested in ${selectedCandidate.title}.`
       : (suggestedMessage ?? messageInput).trim();
-    if (!trimmedMessage || agentLoading || continuationLoading) return;
+    if (!trimmedMessage || agentLoading) return;
 
     if (!agentSessionIdRef.current) {
       agentSessionIdRef.current = crypto.randomUUID();
@@ -574,9 +624,11 @@ export default function Home() {
       if (!response.ok) {
         throw new Error(formatApiError(payload.detail ?? `Agent request failed (${response.status})`));
       }
-      if (typeof payload.reply !== "string" || typeof payload.update_video !== "boolean") {
+      if (typeof payload.reply !== "string") {
         throw new Error("Agent returned an invalid structured response.");
       }
+      const conversationRevision = payload.conversation_revision ?? currentConversationRevisionRef.current + 1;
+      currentConversationRevisionRef.current = conversationRevision;
 
       setConversation((current) => [...current, { role: "assistant", content: payload.reply }]);
       setSuggestions(payload.suggestions ?? []);
@@ -601,20 +653,14 @@ export default function Home() {
             : `TMDB output: ${retrievalCandidates.length} retrieved, ${catalogCandidates.length} presented candidate(s)`,
         );
       }
-      if (payload.update_video) {
-        if (!payload.video_instruction) {
-          throw new Error("Agent requested a video update without a video instruction.");
-        }
-        if (!payload.video_action_id || payload.conversation_revision === undefined) {
-          throw new Error("Agent video action is missing its conversation identity.");
-        }
-        sendVideoInstruction(
-          payload.video_instruction,
-          "Agent",
-          payload.video_action_id,
-          payload.conversation_revision,
-        );
-      }
+      void requestMediaOrchestration(
+        conversationRevision,
+        trimmedMessage,
+        payload.reply,
+        conversation.slice(-6),
+        payload.catalog_candidates ?? recommendations,
+        selectedCandidate ?? selectedRecommendation,
+      );
     } catch (nextError) {
       if (nextError instanceof TypeError && nextError.message === "Failed to fetch") {
         setAgentError(`Agent backend unavailable at ${AGENT_API_URL}. Start FastAPI on port 8000.`);
@@ -704,21 +750,21 @@ export default function Home() {
               </article>
             ))}
             {agentLoading ? <p className="processing-note">Pol is thinking<span className="ellipsis">...</span></p> : null}
-            {continuationLoading ? <p className="processing-note">Finding the next scene<span className="ellipsis">...</span></p> : null}
           </div>
           <div className="conversation-compose">
-            <QuickSuggestions suggestions={suggestions} onSelect={(suggestion) => void sendMessage(undefined, suggestion)} disabled={agentLoading || continuationLoading} />
+            <QuickSuggestions suggestions={suggestions} onSelect={(suggestion) => void sendMessage(undefined, suggestion)} disabled={agentLoading} />
             <div className="chat-input-wrap">
-              <textarea value={messageInput} onChange={(event) => setMessageInput(event.target.value)} placeholder="Tell Pol what you're looking for…" rows={1} disabled={agentLoading || continuationLoading} onKeyDown={(event) => {
+              <textarea value={messageInput} onChange={(event) => setMessageInput(event.target.value)} placeholder="Tell Pol what you're looking for…" rows={1} disabled={agentLoading} onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
                   if (messageInput.trim()) void sendMessage();
                 }
               }} />
-              <button type="button" className="send-button" aria-label="Send message" onClick={() => void sendMessage()} disabled={agentLoading || continuationLoading || !messageInput.trim()}>↑</button>
+              <button type="button" className="send-button" aria-label="Send message" onClick={() => void sendMessage()} disabled={agentLoading || !messageInput.trim()}>↑</button>
             </div>
+            {mediaDecisionStatus ? <p className="status-note">{mediaDecisionStatus}</p> : null}
+            {mediaDecisionReason ? <details className="media-debug"><summary>Media decision</summary><p className="muted">{mediaDecisionReason}</p></details> : null}
             {clipStatus ? <p className="status-note">{clipStatus}</p> : null}
-            {continuationError ? <p role="alert" className="error-note">Continuation error: {continuationError}</p> : null}
             {clipError ? <p role="alert" className="error-note">Clip error: {clipError}</p> : null}
             {agentError ? <p role="alert" className="error-note">Agent error: {agentError}</p> : null}
             {error ? <p role="alert" className="error-note">{error}</p> : null}
@@ -726,16 +772,27 @@ export default function Home() {
         </>
       )}
       stage={(
-        <MediaStage
-          videoRef={videoRef}
-          recommendations={recommendations}
-          selectedRecommendation={selectedRecommendation}
-          onSelectRecommendation={(candidate) => void sendMessage(candidate)}
-          recommendationDisabled={agentLoading || continuationLoading}
-          stageLabel={state === "Live" ? "Live experience" : videoMode === "director" ? "Director ready" : "Pol's theatre"}
-          showControls={Boolean(error || clipError)}
-          settings={settingsPanel}
-        />
+        <div className={recommendations.length > 0 ? "right-experience discovery-mode" : "right-experience cinematic-mode"}>
+          <div className="media-stage-region">
+            <MediaStage
+              videoRef={videoRef}
+              recommendations={recommendations}
+              selectedRecommendation={selectedRecommendation}
+              stageLabel={state === "Live" ? "Live experience" : videoMode === "director" ? "Director ready" : "Pol's theatre"}
+              showControls={Boolean(error || clipError)}
+              settings={settingsPanel}
+            />
+          </div>
+          {recommendations.length > 0 ? (
+            <div className="discovery-recommendations">
+              <RecommendationRail
+                recommendations={recommendations}
+                onSelect={(candidate) => void sendMessage(candidate)}
+                disabled={agentLoading}
+              />
+            </div>
+          ) : null}
+        </div>
       )}
     />
   );

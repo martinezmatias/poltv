@@ -7,6 +7,11 @@ import { VIDEO_CONFIG } from "../config/video";
 import { INITIAL_ASSISTANT_MESSAGE } from "../prompt/assistant";
 import { buildImageToVideoPrompt } from "../prompt/image-to-video";
 import { INITIAL_PROMPT } from "../prompt/initial";
+import { CinematicShell } from "./components/CinematicShell";
+import { MediaStage } from "./components/MediaStage";
+import { ProfileSelector } from "./components/ProfileSelector";
+import { QuickSuggestions } from "./components/QuickSuggestions";
+import type { CatalogCandidate as ComponentCatalogCandidate } from "./components/types";
 
 type ConnectionState = "Idle" | "Connecting" | "Live" | "Error";
 type VideoMode = "mock" | "clips" | "director";
@@ -15,6 +20,7 @@ type LogEntry = { timestamp: string; message: string };
 type ConversationMessage = { role: "user" | "assistant"; content: string };
 type AgentDecision = {
   reply: string;
+  suggestions?: string[];
   update_video: boolean;
   video_instruction: string | null;
   needs_catalog?: boolean;
@@ -34,22 +40,7 @@ type CatalogQuery = {
   year_from: number | null;
   year_to: number | null;
 };
-type CatalogCandidate = {
-  tmdb_id: number;
-  media_type: "movie" | "tv";
-  title: string;
-  year: number | null;
-  genres: string[];
-  overview: string;
-  popularity: number;
-  vote_average: number;
-  vote_count: number;
-  original_language: string;
-  poster_path: string | null;
-  backdrop_path: string | null;
-  poster_url: string | null;
-  backdrop_url: string | null;
-};
+type CatalogCandidate = ComponentCatalogCandidate;
 
 const MOCK_VIDEO_URL = "/resources/IhT_nkpXeYG8F9YsGbVH0_minimax-h3.mp4";
 const AGENT_API_URL = process.env.NEXT_PUBLIC_AGENT_API_URL ?? "http://localhost:8000";
@@ -102,6 +93,12 @@ export default function Home() {
     { role: "assistant", content: INITIAL_ASSISTANT_MESSAGE },
   ]);
   const [messageInput, setMessageInput] = useState("");
+  const [suggestions, setSuggestions] = useState([
+    "Make me laugh",
+    "Something gripping",
+    "Family night",
+    "Surprise me",
+  ]);
   const [agentLoading, setAgentLoading] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
   const [catalogDebug, setCatalogDebug] = useState<{
@@ -113,6 +110,7 @@ export default function Home() {
     error: string | null;
   } | null>(null);
   const [recommendations, setRecommendations] = useState<CatalogCandidate[]>([]);
+  const [selectedRecommendation, setSelectedRecommendation] = useState<CatalogCandidate | null>(null);
   const [generatedInstruction, setGeneratedInstruction] = useState<string | null>(null);
   const [clipLoading, setClipLoading] = useState(false);
   const [clipStatus, setClipStatus] = useState<string | null>(null);
@@ -361,6 +359,7 @@ export default function Home() {
         throw new Error("Continuation attempted to request another video; request suppressed.");
       }
       setConversation((current) => [...current, { role: "assistant", content: payload.reply }]);
+      setSuggestions(payload.suggestions ?? []);
       if (payload.catalog_retrieved || payload.catalog_error || payload.catalog_query) {
         const catalogCandidates = payload.catalog_candidates ?? [];
         const retrievalCandidates = payload.catalog_retrieval_candidates ?? catalogCandidates;
@@ -538,10 +537,10 @@ export default function Home() {
     sendVideoInstruction(trimmedDirection, "Raw");
   };
 
-  const sendMessage = async (selectedCandidate?: CatalogCandidate) => {
+  const sendMessage = async (selectedCandidate?: CatalogCandidate, suggestedMessage?: string) => {
     const trimmedMessage = selectedCandidate
       ? `I'm interested in ${selectedCandidate.title}.`
-      : messageInput.trim();
+      : (suggestedMessage ?? messageInput).trim();
     if (!trimmedMessage || agentLoading || continuationLoading) return;
 
     if (!agentSessionIdRef.current) {
@@ -550,6 +549,7 @@ export default function Home() {
 
     setConversation((current) => [...current, { role: "user", content: trimmedMessage }]);
     setMessageInput("");
+    if (selectedCandidate) setSelectedRecommendation(selectedCandidate);
     setAgentLoading(true);
     setAgentError(null);
 
@@ -579,6 +579,7 @@ export default function Home() {
       }
 
       setConversation((current) => [...current, { role: "assistant", content: payload.reply }]);
+      setSuggestions(payload.suggestions ?? []);
       if (payload.catalog_retrieved || payload.catalog_error || payload.catalog_query) {
         const catalogQuery = payload.catalog_query ?? null;
         const catalogCandidates = payload.catalog_candidates ?? [];
@@ -625,36 +626,30 @@ export default function Home() {
     }
   };
 
-  return (
-    <main>
-      <p>
-        Mode: {videoMode === "mock" ? "MOCK" : videoMode === "clips" ? "CINEMATIC CLIPS" : "LIVE DIRECTOR"}
-      </p>
-      {videoMode !== "director" ? (
-        <section>
-          <h2>Cinematic Clip settings</h2>
-          {videoMode === "mock" ? <p>Mock mode: no fal generation will be requested.</p> : null}
-          <p>
-            <label>
-              Clip method:{" "}
-              <select
-                value={clipMethod}
-                onChange={(event) => setClipMethod(event.target.value as ClipMethod)}
-                disabled={clipLoading}
-              >
+  const settingsPanel = (
+    <details className="settings-popover">
+      <summary aria-label="Open settings">⚙</summary>
+      <div className="settings-panel">
+        <span className="eyebrow">Demo controls</span>
+        <label>Visual mode
+          <select value={videoMode} onChange={(event) => setVideoMode(event.target.value as VideoMode)} disabled={state === "Connecting" || state === "Live"}>
+            <option value="mock">Mock</option>
+            <option value="clips">Cinematic Clips</option>
+            <option value="director">Director</option>
+          </select>
+        </label>
+        {videoMode !== "director" ? (
+          <>
+            <label>Clip method
+              <select value={clipMethod} onChange={(event) => setClipMethod(event.target.value as ClipMethod)} disabled={clipLoading}>
                 <option value="text-to-video">Text-to-Video</option>
                 <option value="image-to-video">Image-to-Video</option>
               </select>
             </label>
-          </p>
-          {clipMethod === "image-to-video" ? (
-            <>
-              <p>Image-to-Video requires a reference image.</p>
-              <input
-                ref={referenceInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                onChange={(event) => {
+            {clipMethod === "image-to-video" ? (
+              <div className="reference-control">
+                <span>Reference image</span>
+                <input ref={referenceInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => {
                   const file = event.target.files?.[0] ?? null;
                   if (file && !file.type.startsWith("image/")) {
                     replaceReferenceImage(null);
@@ -664,186 +659,84 @@ export default function Home() {
                   }
                   setClipError(null);
                   replaceReferenceImage(file);
-                }}
-              />
-              {referencePreviewUrl ? (
-                <p>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={referencePreviewUrl} alt="Selected reference" width={160} />{" "}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      replaceReferenceImage(null);
-                      if (referenceInputRef.current) referenceInputRef.current.value = "";
-                    }}
-                    disabled={clipLoading}
-                  >
-                    Remove image
-                  </button>
-                </p>
-              ) : (
-                <p>No reference image selected.</p>
-              )}
-            </>
-          ) : null}
-        </section>
-      ) : null}
-      <p>Status: {state}</p>
-      <video ref={videoRef} autoPlay playsInline controls />
-      <p>
-        <label>
-          Video mode:{" "}
-          <select
-            value={videoMode}
-            onChange={(event) => setVideoMode(event.target.value as VideoMode)}
-            disabled={state === "Connecting" || state === "Live"}
-          >
-            <option value="mock">Mock</option>
-            <option value="clips">Cinematic Clips</option>
-            <option value="director">Director</option>
-          </select>
-        </label>
-      </p>
-      <p>
-        <button type="button" onClick={startSession} disabled={state === "Connecting" || state === "Live"}>
-          Start
-        </button>{" "}
-        <button type="button" onClick={stopSession} disabled={!sessionActive}>
-          Stop Session
-        </button>
-      </p>
-
-      <section>
-        <h2>{INITIAL_ASSISTANT_MESSAGE}</h2>
-        <div role="log" aria-live="polite">
-          {conversation.map((message, index) => (
-            <p key={`${message.role}-${index}`}>
-              <strong>{message.role === "assistant" ? "Assistant" : "You"}:</strong> {message.content}
-            </p>
-          ))}
+                }} />
+                {referencePreviewUrl ? <button type="button" className="text-button" onClick={() => {
+                  replaceReferenceImage(null);
+                  if (referenceInputRef.current) referenceInputRef.current.value = "";
+                }} disabled={clipLoading}>Remove reference</button> : <small>No reference selected.</small>}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+        <div className="settings-actions">
+          <button type="button" className="primary-button" onClick={startSession} disabled={state === "Connecting" || state === "Live"}>Start experience</button>
+          <button type="button" className="secondary-button" onClick={stopSession} disabled={!sessionActive}>Stop session</button>
         </div>
-        <textarea
-          value={messageInput}
-          onChange={(event) => setMessageInput(event.target.value)}
-          placeholder="Tell the assistant what you want to watch"
-          rows={3}
-          disabled={agentLoading || continuationLoading}
-        />
-        <p>
-          <button type="button" onClick={() => void sendMessage()} disabled={agentLoading || continuationLoading || !messageInput.trim()}>
-            {agentLoading ? "Thinking..." : continuationLoading ? "Continuing..." : "Send"}
-          </button>
-        </p>
-        {continuationLoading ? <p role="status">Continuing the recommendation...</p> : null}
-        {continuationError ? <p role="alert">Continuation error: {continuationError}</p> : null}
-        {clipStatus ? <p role="status">{clipStatus}</p> : null}
-        {clipError ? <p role="alert">Clip error: {clipError}</p> : null}
-        {agentError ? <p role="alert">Agent error: {agentError}</p> : null}
-      </section>
-
-      {generatedInstruction ? (
-        <details>
-          <summary>Last generated video instruction</summary>
-          <pre>{generatedInstruction}</pre>
+        <details className="developer-details">
+          <summary>Developer tools</summary>
+          <p className="muted">Status: {state} · Mode: {videoMode}</p>
+          <textarea value={direction} onChange={(event) => setDirection(event.target.value)} placeholder="Raw Director direction" rows={3} disabled={videoMode !== "director" || state !== "Live"} />
+          <button type="button" className="secondary-button" onClick={sendDirection} disabled={videoMode !== "director" || state !== "Live" || !direction.trim()}>Send raw direction</button>
+          {directionFeedback ? <p role="status" className="muted">{directionFeedback}</p> : null}
+          {generatedInstruction ? <details><summary>Last video instruction</summary><pre>{generatedInstruction}</pre></details> : null}
+          {catalogDebug ? <details><summary>TMDB retrieval debug</summary><pre>{JSON.stringify({ input: catalogDebug.query, output: { retrieval_candidates: catalogDebug.retrievalCandidates, presented_candidates: catalogDebug.candidates, error: catalogDebug.error } }, null, 2)}</pre></details> : null}
+          <details><summary>Experiment log</summary><ul className="experiment-log">{logs.map((entry, index) => <li key={`${entry.timestamp}-${index}`}><code>{entry.timestamp}</code> {entry.message}</li>)}</ul></details>
         </details>
-      ) : null}
+      </div>
+    </details>
+  );
 
-      {catalogDebug ? (
-        <details>
-          <summary>Developer: TMDB retrieval</summary>
-          <p>Called: {catalogDebug.called ? "yes" : "no"}</p>
-          <p>Retrieved: {catalogDebug.retrieved ? "yes" : "no"}</p>
-          {catalogDebug.error ? <p role="alert">TMDB: {catalogDebug.error}</p> : null}
-          <pre>
-            {JSON.stringify(
-              {
-                input: catalogDebug.query,
-                output: {
-                  retrieval_candidates: catalogDebug.retrievalCandidates,
-                  presented_candidates: catalogDebug.candidates,
-                  error: catalogDebug.error,
-                },
-              },
-              null,
-              2,
-            )}
-          </pre>
-        </details>
-      ) : null}
-
-      {recommendations.length > 0 ? (
-        <section>
-          <h2>Recommendations</h2>
-          <div className="recommendation-row">
-            {recommendations.map((candidate) => (
-              <button
-                className="recommendation-card"
-                type="button"
-                key={`${candidate.media_type}-${candidate.tmdb_id}`}
-                onClick={() => void sendMessage(candidate)}
-                disabled={agentLoading || continuationLoading}
-              >
-                {candidate.poster_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={candidate.poster_url} alt={`${candidate.title} poster`} />
-                ) : (
-                  <span className="poster-placeholder">No poster</span>
-                )}
-                <strong>{candidate.title}</strong>
-                <span>
-                  {candidate.media_type === "tv" ? "Series" : "Movie"}
-                  {candidate.year ? ` · ${candidate.year}` : ""}
-                </span>
-              </button>
-            ))}
+  return (
+    <CinematicShell
+      conversation={(
+        <>
+          <ProfileSelector />
+          <div className="conversation-intro">
+            <span className="eyebrow">Your night, your story</span>
+            <h1>{INITIAL_ASSISTANT_MESSAGE}</h1>
+            <p>Tell Pol what you&apos;re in the mood for.</p>
           </div>
-          <p className="tmdb-attribution">
-            <a href="https://www.themoviedb.org/about/logos-attribution" aria-label="TMDB attribution">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                className="tmdb-logo"
-                src="https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg"
-                alt="TMDB"
-              />
-            </a>{" "}
-            This product uses the <a href="https://www.themoviedb.org/">TMDB API</a> but is not endorsed or
-            certified by TMDB.
-          </p>
-        </section>
-      ) : null}
-
-      <details>
-        <summary>Developer: raw Director steering</summary>
-        <textarea
-          value={direction}
-          onChange={(event) => setDirection(event.target.value)}
-          placeholder="Enter a raw Director direction"
-          rows={4}
-          disabled={videoMode !== "director" || state !== "Live"}
+          <div className="conversation-history" role="log" aria-live="polite">
+            {conversation.map((message, index) => (
+              <article className={`message message-${message.role}`} key={`${message.role}-${index}`}>
+                <span className="message-label">{message.role === "assistant" ? "Pol" : "You"}</span>
+                <p>{message.content}</p>
+              </article>
+            ))}
+            {agentLoading ? <p className="processing-note">Pol is thinking<span className="ellipsis">...</span></p> : null}
+            {continuationLoading ? <p className="processing-note">Finding the next scene<span className="ellipsis">...</span></p> : null}
+          </div>
+          <div className="conversation-compose">
+            <QuickSuggestions suggestions={suggestions} onSelect={(suggestion) => void sendMessage(undefined, suggestion)} disabled={agentLoading || continuationLoading} />
+            <div className="chat-input-wrap">
+              <textarea value={messageInput} onChange={(event) => setMessageInput(event.target.value)} placeholder="Tell Pol what you're looking for…" rows={1} disabled={agentLoading || continuationLoading} onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  if (messageInput.trim()) void sendMessage();
+                }
+              }} />
+              <button type="button" className="send-button" aria-label="Send message" onClick={() => void sendMessage()} disabled={agentLoading || continuationLoading || !messageInput.trim()}>↑</button>
+            </div>
+            {clipStatus ? <p className="status-note">{clipStatus}</p> : null}
+            {continuationError ? <p role="alert" className="error-note">Continuation error: {continuationError}</p> : null}
+            {clipError ? <p role="alert" className="error-note">Clip error: {clipError}</p> : null}
+            {agentError ? <p role="alert" className="error-note">Agent error: {agentError}</p> : null}
+            {error ? <p role="alert" className="error-note">{error}</p> : null}
+          </div>
+        </>
+      )}
+      stage={(
+        <MediaStage
+          videoRef={videoRef}
+          recommendations={recommendations}
+          selectedRecommendation={selectedRecommendation}
+          onSelectRecommendation={(candidate) => void sendMessage(candidate)}
+          recommendationDisabled={agentLoading || continuationLoading}
+          stageLabel={state === "Live" ? "Live experience" : videoMode === "director" ? "Director ready" : "Pol's theatre"}
+          showControls={Boolean(error || clipError)}
+          settings={settingsPanel}
         />
-        <p>
-          <button
-            type="button"
-            onClick={sendDirection}
-            disabled={videoMode !== "director" || state !== "Live" || !direction.trim()}
-          >
-            Send raw direction
-          </button>
-        </p>
-        {directionFeedback ? <p role="status">{directionFeedback}</p> : null}
-      </details>
-
-      <section>
-        <h2>Experiment log</h2>
-        <ul>
-          {logs.map((entry, index) => (
-            <li key={`${entry.timestamp}-${index}`}>
-              <code>{entry.timestamp}</code> {entry.message}
-            </li>
-          ))}
-        </ul>
-      </section>
-      {error ? <p role="alert">{error}</p> : null}
-    </main>
+      )}
+    />
   );
 }

@@ -37,6 +37,7 @@ class ConversationMessage(BaseModel):
 class AgentDecision(BaseModel):
     reply: str
     update_video: bool
+    suggestions: List[str] = Field(default_factory=list)
     video_instruction: Optional[str] = None
     needs_catalog: bool = False
     catalog_query: Optional[CatalogQuery] = None

@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+
+# Next.js
+.next/
+out/
+
+# Node dependencies
+node_modules/
+*.tsbuildinfo

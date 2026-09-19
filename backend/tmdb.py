@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import httpx
 
@@ -20,6 +20,25 @@ class TMDBClient:
     def __init__(self, access_token: str) -> None:
         self.access_token = access_token
         self._genre_cache: Dict[str, Dict[str, int]] = {}
+
+    def _image_configuration(self) -> Tuple[str, List[str], List[str]]:
+        try:
+            images = self._request("/configuration").get("images", {})
+            base_url = images.get("secure_base_url") or images.get("base_url")
+            poster_sizes = images.get("poster_sizes")
+            backdrop_sizes = images.get("backdrop_sizes")
+            if isinstance(base_url, str) and isinstance(poster_sizes, list) and isinstance(backdrop_sizes, list):
+                return base_url, [str(size) for size in poster_sizes], [str(size) for size in backdrop_sizes]
+        except TMDBError:
+            pass
+        return "https://image.tmdb.org/t/p/", ["w500", "original"], ["w780", "w1280", "original"]
+
+    @staticmethod
+    def _image_url(base_url: str, sizes: List[str], path: Optional[str], preferred_size: str) -> Optional[str]:
+        if not path:
+            return None
+        size = preferred_size if preferred_size in sizes else (sizes[0] if sizes else "original")
+        return f"{base_url}{size}{path}"
 
     def _request(self, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         try:
@@ -102,7 +121,11 @@ class TMDBClient:
             return None
 
     def _normalize(
-        self, item: Dict[str, Any], media_type: str, genres: Dict[str, int]
+        self,
+        item: Dict[str, Any],
+        media_type: str,
+        genres: Dict[str, int],
+        image_configuration: Tuple[str, List[str], List[str]],
     ) -> Optional[CatalogCandidate]:
         item_id = item.get("id")
         title = item.get("title") or item.get("name")
@@ -113,6 +136,9 @@ class TMDBClient:
             name for name, genre_id in genres.items() if genre_id in (item.get("genre_ids") or [])
         ]
         release_date = item.get("release_date") or item.get("first_air_date")
+        poster_path = item.get("poster_path") if isinstance(item.get("poster_path"), str) else None
+        backdrop_path = item.get("backdrop_path") if isinstance(item.get("backdrop_path"), str) else None
+        base_url, poster_sizes, backdrop_sizes = image_configuration
         return CatalogCandidate(
             tmdb_id=item_id,
             media_type=media_type,
@@ -124,17 +150,23 @@ class TMDBClient:
             vote_average=float(item.get("vote_average") or 0),
             vote_count=int(item.get("vote_count") or 0),
             original_language=str(item.get("original_language") or ""),
-            poster_path=item.get("poster_path") if isinstance(item.get("poster_path"), str) else None,
+            poster_path=poster_path,
+            backdrop_path=backdrop_path,
+            poster_url=self._image_url(base_url, poster_sizes, poster_path, "w500"),
+            backdrop_url=self._image_url(base_url, backdrop_sizes, backdrop_path, "w780"),
         )
 
     def _normalize_many(
-        self, items: Iterable[Dict[str, Any]], media_type: str
+        self,
+        items: Iterable[Dict[str, Any]],
+        media_type: str,
+        image_configuration: Tuple[str, List[str], List[str]],
     ) -> List[CatalogCandidate]:
         genres = self._genres(media_type)
         normalized: List[CatalogCandidate] = []
         seen: set[tuple[str, int]] = set()
         for item in items:
-            candidate = self._normalize(item, media_type, genres)
+            candidate = self._normalize(item, media_type, genres, image_configuration)
             if candidate is None or (candidate.media_type, candidate.tmdb_id) in seen:
                 continue
             seen.add((candidate.media_type, candidate.tmdb_id))
@@ -144,17 +176,22 @@ class TMDBClient:
     def retrieve(self, query: CatalogQuery) -> List[CatalogCandidate]:
         media_types = ["movie", "tv"] if query.media_type == "both" else [query.media_type]
         candidates: List[CatalogCandidate] = []
+        image_configuration = self._image_configuration()
 
         for media_type in media_types:
             if query.title_query:
                 search_results = self._search(media_type, query.title_query)
                 if search_results:
-                    candidates.extend(self._normalize_many(search_results[:1], media_type))
+                    candidates.extend(self._normalize_many(search_results[:1], media_type, image_configuration))
                     anchor_id = search_results[0].get("id")
                     if isinstance(anchor_id, int):
-                        candidates.extend(self._normalize_many(self._similar(media_type, anchor_id)[:5], media_type))
+                        candidates.extend(
+                            self._normalize_many(self._similar(media_type, anchor_id)[:5], media_type, image_configuration)
+                        )
             else:
-                candidates.extend(self._normalize_many(self._discover(media_type, query)[:6], media_type))
+                candidates.extend(
+                    self._normalize_many(self._discover(media_type, query)[:6], media_type, image_configuration)
+                )
 
         unique: List[CatalogCandidate] = []
         seen: set[tuple[str, int]] = set()

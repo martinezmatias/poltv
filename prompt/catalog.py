@@ -25,3 +25,12 @@ Do not invent catalog results or claim that a title came from TMDB. Continue the
 conversation honestly by briefly explaining that catalog lookup is unavailable and
 asking a useful follow-up or suggesting that the viewer try again later.
 """.strip()
+
+SELECTED_CANDIDATE_CONTEXT = """
+The viewer selected this exact catalog candidate through the interface:
+{candidate}
+
+Treat this as an explicit reference to the title and media type, not an ambiguous
+positional reference. Continue the conversation naturally and use TMDB context when
+available; do not invent unsupported metadata.
+""".strip()

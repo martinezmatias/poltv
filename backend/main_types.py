@@ -25,3 +25,12 @@ class CatalogCandidate(BaseModel):
     vote_count: int = 0
     original_language: str = ""
     poster_path: Optional[str] = None
+    backdrop_path: Optional[str] = None
+    poster_url: Optional[str] = None
+    backdrop_url: Optional[str] = None
+
+
+class CatalogSelection(BaseModel):
+    tmdb_id: int
+    media_type: Literal["movie", "tv"]
+    title: str

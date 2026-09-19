@@ -12,9 +12,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from mistralai import Mistral
 from pydantic import BaseModel, Field, ValidationError
 
-from backend.main_types import CatalogCandidate, CatalogQuery
+from backend.main_types import CatalogCandidate, CatalogQuery, CatalogSelection
 from backend.tmdb import TMDBClient, TMDBError
-from prompt.catalog import CATALOG_FAILURE_CONTEXT, CATALOG_RESULTS_CONTEXT, RECENT_CANDIDATES_CONTEXT
+from prompt.catalog import (
+    CATALOG_FAILURE_CONTEXT,
+    CATALOG_RESULTS_CONTEXT,
+    RECENT_CANDIDATES_CONTEXT,
+    SELECTED_CANDIDATE_CONTEXT,
+)
 from prompt.system import INITIAL_ASSISTANT_MESSAGE, SYSTEM_PROMPT
 
 load_dotenv()
@@ -33,17 +38,20 @@ class AgentDecision(BaseModel):
     video_instruction: Optional[str] = None
     needs_catalog: bool = False
     catalog_query: Optional[CatalogQuery] = None
+    presented_catalog: List[CatalogSelection] = Field(default_factory=list)
 
 
 class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=200)
     message: str = Field(min_length=1, max_length=4000)
+    selected_catalog: Optional[CatalogSelection] = None
 
 
 class ChatResponse(AgentDecision):
     session_id: str
     catalog_retrieved: bool = False
     catalog_candidates: List[CatalogCandidate] = Field(default_factory=list)
+    catalog_retrieval_candidates: List[CatalogCandidate] = Field(default_factory=list)
     catalog_error: Optional[str] = None
 
 
@@ -150,7 +158,11 @@ def health() -> dict[str, str]:
     }
 
 
-def build_model_messages(session: ConversationSession, user_message: ConversationMessage) -> List[dict[str, str]]:
+def build_model_messages(
+    session: ConversationSession,
+    user_message: ConversationMessage,
+    selected_catalog: Optional[CatalogSelection] = None,
+) -> List[dict[str, str]]:
     messages: List[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
     if session.recent_candidates:
         messages.append(
@@ -158,6 +170,15 @@ def build_model_messages(session: ConversationSession, user_message: Conversatio
                 "role": "system",
                 "content": RECENT_CANDIDATES_CONTEXT.format(
                     candidates=json.dumps([candidate.model_dump() for candidate in session.recent_candidates])
+                ),
+            }
+        )
+    if selected_catalog:
+        messages.append(
+            {
+                "role": "system",
+                "content": SELECTED_CANDIDATE_CONTEXT.format(
+                    candidate=json.dumps(selected_catalog.model_dump())
                 ),
             }
         )
@@ -211,8 +232,11 @@ def catalog_context(candidates: List[CatalogCandidate], error: Optional[str] = N
 def chat(request: ChatRequest) -> ChatResponse:
     session = store.get_or_create(request.session_id)
     user_message = ConversationMessage(role="user", content=request.message)
-    decision = validate_decision(request_agent(build_model_messages(session, user_message)))
+    decision = validate_decision(
+        request_agent(build_model_messages(session, user_message, request.selected_catalog))
+    )
     candidates: List[CatalogCandidate] = []
+    presented_candidates: List[CatalogCandidate] = []
     catalog_error: Optional[str] = None
     catalog_retrieved = False
     retrieval_query: Optional[CatalogQuery] = None
@@ -231,10 +255,20 @@ def chat(request: ChatRequest) -> ChatResponse:
         except TMDBError as exc:
             catalog_error = str(exc)
 
-        grounding_messages = build_model_messages(session, user_message)
+        grounding_messages = build_model_messages(session, user_message, request.selected_catalog)
         grounding_messages.append({"role": "system", "content": catalog_context(candidates, catalog_error)})
         decision = validate_decision(request_agent(grounding_messages))
         decision = decision.model_copy(update={"needs_catalog": False, "catalog_query": None})
+        candidate_by_key = {(candidate.media_type, candidate.tmdb_id): candidate for candidate in candidates}
+        presented_candidates = [
+            candidate_by_key[(selection.media_type, selection.tmdb_id)]
+            for selection in decision.presented_catalog
+            if (selection.media_type, selection.tmdb_id) in candidate_by_key
+        ]
+        if not presented_candidates:
+            presented_candidates = candidates[:3]
+        if presented_candidates:
+            store.set_candidates(request.session_id, presented_candidates)
 
     store.append(
         request.session_id,
@@ -248,7 +282,8 @@ def chat(request: ChatRequest) -> ChatResponse:
         session_id=request.session_id,
         **response_data,
         catalog_retrieved=catalog_retrieved,
-        catalog_candidates=candidates,
+        catalog_candidates=presented_candidates,
+        catalog_retrieval_candidates=candidates,
         catalog_error=catalog_error,
     )
 

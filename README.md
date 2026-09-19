@@ -9,8 +9,9 @@ This repository currently contains:
 - Step 2A: use Mistral through a small FastAPI backend to conduct a conversation and decide when a visual update is useful.
 - Step 2B: manually select Mock, Cinematic Clips, or Director; Cinematic Clips supports MiniMax H3 Max Text-to-Video and Image-to-Video for independent short clips.
 - Step 3A: use TMDB-grounded retrieval for conversational movie and TV recommendations.
+- Step 3B: display the current TMDB recommendation set as selectable poster cards.
 
-Voice input, persistence, poster-card UI, and later roadmap steps are not implemented.
+Voice input, persistence, and later roadmap steps are not implemented.
 
 ## Architecture
 
@@ -207,6 +208,7 @@ FastAPI exposes:
 ```text
 GET  /health
 POST /chat
+POST /continue-after-video
 ```
 
 Request body for `/chat`:
@@ -216,7 +218,6 @@ Request body for `/chat`:
   "session_id": "browser-session-id",
   "message": "Something exciting."
 }
-```
 
 Response body:
 
@@ -245,13 +246,31 @@ When a video update is justified:
 
 The backend validates this response with the Pydantic `AgentDecision` model. Conversation history is stored in memory only and is lost when FastAPI restarts.
 
+When a finite Text-to-Video or Image-to-Video clip completes playback, the browser
+calls `/continue-after-video` with the generated action ID, conversation revision,
+mode, and video instruction. FastAPI performs a continuation-only Mistral turn using
+the existing history. That turn may ask a follow-up question or retrieve TMDB
+recommendations, but its response is forced to `update_video=false`, so it cannot
+start an autonomous video-generation loop. The browser appends the continuation as
+an assistant message and updates recommendation cards normally.
+
+The backend rejects duplicate or stale clip completions. If the viewer sends a new
+message before an older clip ends, that older clip's continuation is skipped. Mock
+mode simulates clip completion immediately without calling fal. Director remains a
+continuous stream and has no reliable ended event, so steering does not automatically
+trigger this continuation; its existing manual/live behavior is preserved.
+
 ## TMDB catalog grounding
 
 FastAPI uses the TMDB v3 API with a server-side Bearer token. The retrieval layer currently supports movie and TV title search, movie and TV discovery with simple genre/year filters, genre lists for translating structured genre names to TMDB IDs, and similar-title results when a referenced title is resolved.
 
 Mistral first decides whether `needs_catalog` is true and returns a compact `catalog_query`. FastAPI retrieves at most a small normalized candidate set, then sends those candidates to a second Mistral call for the final conversational response. The model is instructed not to invent catalog titles or metadata. Recent candidates are held in memory for the active `session_id`, so follow-ups such as “the second one” can be resolved.
 
-The developer section **TMDB retrieval** exposes the normalized query, retrieval status, errors, and compact candidates without displaying raw TMDB responses.
+The developer section **TMDB retrieval** exposes the normalized query, retrieval status, errors, and compact candidates without displaying raw TMDB responses. Candidates also include backend-normalized `poster_url` and `backdrop_url` values based on TMDB image configuration.
+
+When retrieval returns candidates, the frontend displays the same candidates as a small horizontal row of selectable cards. Clicking a card sends its TMDB ID, media type, and title to FastAPI alongside a natural-language message, so Mistral receives an unambiguous selection context. The cards do not start video generation and do not use TMDB posters as Image-to-Video inputs.
+
+TMDB poster URLs follow the official [TMDB image URL guidance](https://developer.themoviedb.org/docs/image-basics), using a normal `w500` poster size when available. The interface includes the required notice: “This product uses the TMDB API but is not endorsed or certified by TMDB.”
 
 ## Director steering protocol
 
@@ -276,6 +295,7 @@ Model prompts are kept outside the application logic:
 - `prompt/initial.ts` — initial Director scene.
 - `prompt/assistant.ts` — deterministic opening assistant message.
 - `prompt/system.py` — Mistral system prompt and backend assistant-message resource.
+- `prompt/continuation.py` — explicit post-video continuation instructions.
 
 ## Video configuration
 
@@ -351,4 +371,4 @@ Confirm that the page says `Mode: LIVE DIRECTOR`, not `Mode: MOCK`. In Mock mode
 
 ## Current scope
 
-The current implementation intentionally stops at conversational Mistral decisions, TMDB-grounded catalog retrieval, and manually selected Mock, Cinematic Clips, and Director visual modes. Voice, user profiles, persistence, poster UI, automatic mode routing, and later roadmap steps require separate explicit work.
+The current implementation intentionally stops at conversational Mistral decisions, TMDB-grounded catalog retrieval/cards, and manually selected Mock, Cinematic Clips, and Director visual modes. Voice, user profiles, persistence, automatic mode routing, and later roadmap steps require separate explicit work.

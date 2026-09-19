@@ -3,26 +3,61 @@
 import { useEffect, useRef, useState } from "react";
 import { createFalClient } from "@fal-ai/client";
 import { wma, type ManagedRealtimeSession, type WmaRealtimeSession } from "@fal-ai/client/realtime";
+import { VIDEO_CONFIG } from "../config/video";
 import { INITIAL_ASSISTANT_MESSAGE } from "../prompt/assistant";
+import { buildImageToVideoPrompt } from "../prompt/image-to-video";
 import { INITIAL_PROMPT } from "../prompt/initial";
 
 type ConnectionState = "Idle" | "Connecting" | "Live" | "Error";
 type VideoMode = "mock" | "clips" | "director";
+type ClipMethod = "text-to-video" | "image-to-video";
 type LogEntry = { timestamp: string; message: string };
 type ConversationMessage = { role: "user" | "assistant"; content: string };
 type AgentDecision = {
   reply: string;
   update_video: boolean;
   video_instruction: string | null;
+  needs_catalog?: boolean;
+  catalog_query?: CatalogQuery | null;
+  catalog_retrieved?: boolean;
+  catalog_candidates?: CatalogCandidate[];
+  catalog_error?: string | null;
+};
+type CatalogQuery = {
+  media_type: "movie" | "tv" | "both";
+  title_query: string | null;
+  genres: string[];
+  year_from: number | null;
+  year_to: number | null;
+};
+type CatalogCandidate = {
+  tmdb_id: number;
+  media_type: "movie" | "tv";
+  title: string;
+  year: number | null;
+  genres: string[];
+  overview: string;
+  popularity: number;
+  vote_average: number;
+  vote_count: number;
+  original_language: string;
+  poster_path: string | null;
 };
 
-const TEST_DURATION_MS = 60_000;
-const MOCK_VIDEO_URL = "/resources/zIYbTMoXfFY0e3iIUQ0bq_minimax-h3.mp4";
+const MOCK_VIDEO_URL = "/resources/IhT_nkpXeYG8F9YsGbVH0_minimax-h3.mp4";
 const AGENT_API_URL = process.env.NEXT_PUBLIC_AGENT_API_URL ?? "http://localhost:8000";
-const TEXT_TO_VIDEO_ENDPOINT = "minimax/h3-max/text-to-video";
+
+const formatApiError = (value: unknown) => {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+};
 
 const fal = createFalClient({ proxyUrl: "/api/fal/proxy" });
-const textToVideoFal = fal as unknown as {
+const cinematicClipFal = fal as unknown as {
   subscribe: (
     endpoint: string,
     options: {
@@ -35,6 +70,8 @@ const textToVideoFal = fal as unknown as {
 
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const referenceInputRef = useRef<HTMLInputElement>(null);
+  const referencePreviewUrlRef = useRef<string | null>(null);
   const sessionRef = useRef<ManagedRealtimeSession<WmaRealtimeSession> | null>(null);
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionStartRef = useRef<number | null>(null);
@@ -46,6 +83,9 @@ export default function Home() {
   const [sessionActive, setSessionActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [videoMode, setVideoMode] = useState<VideoMode>("mock");
+  const [clipMethod, setClipMethod] = useState<ClipMethod>("text-to-video");
+  const [referenceImage, setReferenceImage] = useState<File | null>(null);
+  const [referencePreviewUrl, setReferencePreviewUrl] = useState<string | null>(null);
   const [direction, setDirection] = useState("");
   const [directionFeedback, setDirectionFeedback] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -55,10 +95,29 @@ export default function Home() {
   const [messageInput, setMessageInput] = useState("");
   const [agentLoading, setAgentLoading] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
+  const [catalogDebug, setCatalogDebug] = useState<{
+    called: boolean;
+    retrieved: boolean;
+    query: CatalogQuery | null;
+    candidates: CatalogCandidate[];
+    error: string | null;
+  } | null>(null);
   const [generatedInstruction, setGeneratedInstruction] = useState<string | null>(null);
   const [clipLoading, setClipLoading] = useState(false);
   const [clipStatus, setClipStatus] = useState<string | null>(null);
   const [clipError, setClipError] = useState<string | null>(null);
+
+  useEffect(() => () => {
+    if (referencePreviewUrlRef.current) URL.revokeObjectURL(referencePreviewUrlRef.current);
+  }, []);
+
+  const replaceReferenceImage = (file: File | null) => {
+    if (referencePreviewUrlRef.current) URL.revokeObjectURL(referencePreviewUrlRef.current);
+    const nextPreviewUrl = file ? URL.createObjectURL(file) : null;
+    referencePreviewUrlRef.current = nextPreviewUrl;
+    setReferenceImage(file);
+    setReferencePreviewUrl(nextPreviewUrl);
+  };
 
   const logEvent = (message: string) => {
     const elapsed = sessionStartRef.current === null ? 0 : (performance.now() - sessionStartRef.current) / 1000;
@@ -237,7 +296,7 @@ export default function Home() {
       stopTimerRef.current = setTimeout(() => {
         if (sessionRef.current !== session) return;
         stopSession();
-      }, TEST_DURATION_MS);
+      }, VIDEO_CONFIG.directorTestDurationMs);
     } catch (nextError) {
       if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
       setSessionActive(false);
@@ -259,14 +318,34 @@ export default function Home() {
     logEvent("Cinematic clip generation requested");
 
     try {
-      const result = await textToVideoFal.subscribe(TEXT_TO_VIDEO_ENDPOINT, {
-        input: {
-          prompt: instruction,
-          duration: 5,
-          resolution: "480P",
-          prompt_expansion_mode: "disabled",
-          aspect_ratio: "16:9",
-        },
+      const clipConfig =
+        clipMethod === "image-to-video"
+          ? VIDEO_CONFIG.cinematicClips.imageToVideo
+          : VIDEO_CONFIG.cinematicClips.textToVideo;
+
+      if (clipMethod === "image-to-video" && !referenceImage) {
+        const message = "Image-to-Video requires a reference image before generating a clip.";
+        setClipError(message);
+        setClipStatus(null);
+        logEvent(`Error: ${message}`);
+        return;
+      }
+
+      const input: Record<string, unknown> = {
+        prompt:
+          clipMethod === "image-to-video" ? buildImageToVideoPrompt(instruction) : instruction,
+        duration: clipConfig.duration,
+        resolution: clipConfig.resolution,
+        prompt_expansion_mode: clipConfig.promptExpansionMode,
+      };
+      if (clipMethod === "image-to-video") {
+        input.image_url = referenceImage;
+      } else {
+        input.aspect_ratio = VIDEO_CONFIG.cinematicClips.textToVideo.aspectRatio;
+      }
+
+      const result = await cinematicClipFal.subscribe(clipConfig.endpoint, {
+        input,
         logs: true,
         onQueueUpdate: (status) => {
           if (status.status === "IN_QUEUE") setClipStatus("Cinematic clip queued...");
@@ -305,6 +384,9 @@ export default function Home() {
 
     if (videoMode === "mock") {
       logEvent(`${source} produced video instruction (mock only)`);
+      if (!sessionActive && state !== "Live") {
+        startSession();
+      }
       return;
     }
 
@@ -363,12 +445,32 @@ export default function Home() {
       });
 
       const payload = (await response.json()) as AgentDecision & { detail?: string };
-      if (!response.ok) throw new Error(payload.detail ?? `Agent request failed (${response.status})`);
+      if (!response.ok) {
+        throw new Error(formatApiError(payload.detail ?? `Agent request failed (${response.status})`));
+      }
       if (typeof payload.reply !== "string" || typeof payload.update_video !== "boolean") {
         throw new Error("Agent returned an invalid structured response.");
       }
 
       setConversation((current) => [...current, { role: "assistant", content: payload.reply }]);
+      if (payload.catalog_retrieved || payload.catalog_error || payload.catalog_query) {
+        const catalogQuery = payload.catalog_query ?? null;
+        const catalogCandidates = payload.catalog_candidates ?? [];
+        const catalogError = payload.catalog_error ?? null;
+        setCatalogDebug({
+          called: true,
+          retrieved: Boolean(payload.catalog_retrieved),
+          query: catalogQuery,
+          candidates: catalogCandidates,
+          error: catalogError,
+        });
+        logEvent(`TMDB called with input: ${JSON.stringify(catalogQuery)}`);
+        logEvent(
+          catalogError
+            ? `TMDB output error: ${catalogError}`
+            : `TMDB output: ${catalogCandidates.length} normalized candidate(s)`,
+        );
+      }
       if (payload.update_video) {
         if (!payload.video_instruction) {
           throw new Error("Agent requested a video update without a video instruction.");
@@ -391,6 +493,64 @@ export default function Home() {
       <p>
         Mode: {videoMode === "mock" ? "MOCK" : videoMode === "clips" ? "CINEMATIC CLIPS" : "LIVE DIRECTOR"}
       </p>
+      {videoMode !== "director" ? (
+        <section>
+          <h2>Cinematic Clip settings</h2>
+          {videoMode === "mock" ? <p>Mock mode: no fal generation will be requested.</p> : null}
+          <p>
+            <label>
+              Clip method:{" "}
+              <select
+                value={clipMethod}
+                onChange={(event) => setClipMethod(event.target.value as ClipMethod)}
+                disabled={clipLoading}
+              >
+                <option value="text-to-video">Text-to-Video</option>
+                <option value="image-to-video">Image-to-Video</option>
+              </select>
+            </label>
+          </p>
+          {clipMethod === "image-to-video" ? (
+            <>
+              <p>Image-to-Video requires a reference image.</p>
+              <input
+                ref={referenceInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null;
+                  if (file && !file.type.startsWith("image/")) {
+                    replaceReferenceImage(null);
+                    setClipError("Please select a PNG, JPEG, or WebP image.");
+                    event.currentTarget.value = "";
+                    return;
+                  }
+                  setClipError(null);
+                  replaceReferenceImage(file);
+                }}
+              />
+              {referencePreviewUrl ? (
+                <p>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={referencePreviewUrl} alt="Selected reference" width={160} />{" "}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      replaceReferenceImage(null);
+                      if (referenceInputRef.current) referenceInputRef.current.value = "";
+                    }}
+                    disabled={clipLoading}
+                  >
+                    Remove image
+                  </button>
+                </p>
+              ) : (
+                <p>No reference image selected.</p>
+              )}
+            </>
+          ) : null}
+        </section>
+      ) : null}
       <p>Status: {state}</p>
       <video ref={videoRef} autoPlay playsInline controls />
       <p>
@@ -446,6 +606,28 @@ export default function Home() {
         <details>
           <summary>Last generated video instruction</summary>
           <pre>{generatedInstruction}</pre>
+        </details>
+      ) : null}
+
+      {catalogDebug ? (
+        <details>
+          <summary>Developer: TMDB retrieval</summary>
+          <p>Called: {catalogDebug.called ? "yes" : "no"}</p>
+          <p>Retrieved: {catalogDebug.retrieved ? "yes" : "no"}</p>
+          {catalogDebug.error ? <p role="alert">TMDB: {catalogDebug.error}</p> : null}
+          <pre>
+            {JSON.stringify(
+              {
+                input: catalogDebug.query,
+                output: {
+                  candidates: catalogDebug.candidates,
+                  error: catalogDebug.error,
+                },
+              },
+              null,
+              2,
+            )}
+          </pre>
         </details>
       ) : null}
 

@@ -1,0 +1,2 @@
+export const buildImageToVideoPrompt = (videoInstruction: string) =>
+  `Use the subject shown in the reference image as a recognizable central character in the film. Preserve the subject's identity and distinctive visual traits while naturally animating and placing them in the requested cinematic scene. Do not treat the reference image as a disposable background or unrelated opening frame. ${videoInstruction}`;

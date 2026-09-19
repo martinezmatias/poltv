@@ -3,12 +3,21 @@
 import { useEffect, useRef, useState } from "react";
 import { createFalClient } from "@fal-ai/client";
 import { wma, type ManagedRealtimeSession, type WmaRealtimeSession } from "@fal-ai/client/realtime";
+import { INITIAL_ASSISTANT_MESSAGE } from "../prompt/assistant";
 import { INITIAL_PROMPT } from "../prompt/initial";
 
 type ConnectionState = "Idle" | "Connecting" | "Live" | "Error";
 type LogEntry = { timestamp: string; message: string };
-const TEST_DURATION_MS = 30_000;
+type ConversationMessage = { role: "user" | "assistant"; content: string };
+type AgentDecision = {
+  reply: string;
+  update_video: boolean;
+  director_instruction: string | null;
+};
+
+const TEST_DURATION_MS = 60_000;
 const MOCK_VIDEO_URL = "/resources/zIYbTMoXfFY0e3iIUQ0bq_minimax-h3.mp4";
+const AGENT_API_URL = process.env.NEXT_PUBLIC_AGENT_API_URL ?? "http://localhost:8000";
 
 const fal = createFalClient({ proxyUrl: "/api/fal/proxy" });
 
@@ -20,6 +29,7 @@ export default function Home() {
   const promptVersionRef = useRef(1);
   const mediaReceivedRef = useRef(false);
   const connectedRef = useRef(false);
+  const agentSessionIdRef = useRef("");
   const [state, setState] = useState<ConnectionState>("Idle");
   const [sessionActive, setSessionActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,12 +37,22 @@ export default function Home() {
   const [direction, setDirection] = useState("");
   const [directionFeedback, setDirectionFeedback] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [conversation, setConversation] = useState<ConversationMessage[]>([
+    { role: "assistant", content: INITIAL_ASSISTANT_MESSAGE },
+  ]);
+  const [messageInput, setMessageInput] = useState("");
+  const [agentLoading, setAgentLoading] = useState(false);
+  const [agentError, setAgentError] = useState<string | null>(null);
+  const [generatedInstruction, setGeneratedInstruction] = useState<string | null>(null);
 
   const logEvent = (message: string) => {
     const elapsed = sessionStartRef.current === null ? 0 : (performance.now() - sessionStartRef.current) / 1000;
     setLogs((currentLogs) => [
       ...currentLogs,
-      { timestamp: `${Math.floor(elapsed / 60).toString().padStart(2, "0")}:${(elapsed % 60).toFixed(1).padStart(4, "0")}`, message },
+      {
+        timestamp: `${Math.floor(elapsed / 60).toString().padStart(2, "0")}:${(elapsed % 60).toFixed(1).padStart(4, "0")}`,
+        message,
+      },
     ]);
   };
 
@@ -140,8 +160,10 @@ export default function Home() {
               setDirectionFeedback(`Direction ${message.prompt_version} is being prepared.`);
             }
             if (message?.type === "prompt_applied") {
-              setDirectionFeedback(`Direction ${message.prompt_version} acknowledged.`);
-              logEvent(`Direction ${message.prompt_version} acknowledged`);
+              setDirectionFeedback(
+                `Direction ${message.prompt_version} acknowledged for upcoming generation.`,
+              );
+              logEvent(`FAL reply: direction ${message.prompt_version} accepted (prompt_applied)`);
             }
             if (message?.type === "prompt_rejected") {
               setDirectionFeedback(`Direction ${message.prompt_version} rejected: ${message.reason}.`);
@@ -199,7 +221,6 @@ export default function Home() {
 
       stopTimerRef.current = setTimeout(() => {
         if (sessionRef.current !== session) return;
-
         stopSession();
       }, TEST_DURATION_MS);
     } catch (nextError) {
@@ -211,28 +232,88 @@ export default function Home() {
     }
   };
 
+  const sendDirectorInstruction = (instruction: string, source: string) => {
+    const trimmedInstruction = instruction.trim();
+    if (!trimmedInstruction) return;
+
+    setGeneratedInstruction(trimmedInstruction);
+
+    if (mockMode) {
+      logEvent(`${source} produced Director instruction (mock only)`);
+      return;
+    }
+
+    const session = sessionRef.current;
+    if (!session || state !== "Live") {
+      const message = "Director is not running, so the instruction was not sent.";
+      setError(message);
+      logEvent(`Error: ${message}`);
+      return;
+    }
+
+    const nextVersion = promptVersionRef.current + 1;
+    promptVersionRef.current = nextVersion;
+    session.send({
+      type: "prompt",
+      prompt: trimmedInstruction,
+      script_mode: "replace",
+      replan: true,
+      prompt_version: nextVersion,
+    });
+    logEvent(`${source} Director instruction ${nextVersion} submitted`);
+    setDirectionFeedback(`Direction ${nextVersion} submitted.`);
+  };
+
   const sendDirection = () => {
     const trimmedDirection = direction.trim();
     if (!trimmedDirection || state !== "Live") return;
 
-    const nextVersion = promptVersionRef.current + 1;
-    promptVersionRef.current = nextVersion;
-    logEvent(`Direction ${nextVersion} submitted`);
-    setDirectionFeedback(`Direction ${nextVersion} submitted.`);
     setDirection("");
+    sendDirectorInstruction(trimmedDirection, "Raw");
+  };
 
-    if (mockMode) {
-      setDirectionFeedback(`Direction ${nextVersion} acknowledged (mock).`);
-      logEvent(`Direction ${nextVersion} acknowledged (mock)`);
-      return;
+  const sendMessage = async () => {
+    const trimmedMessage = messageInput.trim();
+    if (!trimmedMessage || agentLoading) return;
+
+    if (!agentSessionIdRef.current) {
+      agentSessionIdRef.current = crypto.randomUUID();
     }
 
-    sessionRef.current?.send({
-      type: "prompt",
-      prompt: trimmedDirection,
-      replan: true,
-      prompt_version: nextVersion,
-    });
+    setConversation((current) => [...current, { role: "user", content: trimmedMessage }]);
+    setMessageInput("");
+    setAgentLoading(true);
+    setAgentError(null);
+
+    try {
+      const response = await fetch(`${AGENT_API_URL}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: agentSessionIdRef.current, message: trimmedMessage }),
+      });
+
+      const payload = (await response.json()) as AgentDecision & { detail?: string };
+      if (!response.ok) throw new Error(payload.detail ?? `Agent request failed (${response.status})`);
+      if (typeof payload.reply !== "string" || typeof payload.update_video !== "boolean") {
+        throw new Error("Agent returned an invalid structured response.");
+      }
+
+      setConversation((current) => [...current, { role: "assistant", content: payload.reply }]);
+      if (payload.update_video) {
+        if (!payload.director_instruction) {
+          throw new Error("Agent requested a video update without a Director instruction.");
+        }
+        sendDirectorInstruction(payload.director_instruction, "Agent");
+      }
+    } catch (nextError) {
+      if (nextError instanceof TypeError && nextError.message === "Failed to fetch") {
+        setAgentError(`Agent backend unavailable at ${AGENT_API_URL}. Start FastAPI on port 8000.`);
+      } else {
+        setAgentError(nextError instanceof Error ? nextError.message : String(nextError));
+      }
+    } finally {
+      setAgentLoading(false);
+    }
   };
 
   return (
@@ -254,13 +335,45 @@ export default function Home() {
       <p>
         <button type="button" onClick={startSession} disabled={state === "Connecting" || state === "Live"}>
           Start
-        </button>
+        </button>{" "}
         <button type="button" onClick={stopSession} disabled={!sessionActive}>
           Stop Session
         </button>
       </p>
+
       <section>
-        <h2>Director steering</h2>
+        <h2>{INITIAL_ASSISTANT_MESSAGE}</h2>
+        <div role="log" aria-live="polite">
+          {conversation.map((message, index) => (
+            <p key={`${message.role}-${index}`}>
+              <strong>{message.role === "assistant" ? "Assistant" : "You"}:</strong> {message.content}
+            </p>
+          ))}
+        </div>
+        <textarea
+          value={messageInput}
+          onChange={(event) => setMessageInput(event.target.value)}
+          placeholder="Tell the assistant what you want to watch"
+          rows={3}
+          disabled={agentLoading}
+        />
+        <p>
+          <button type="button" onClick={sendMessage} disabled={agentLoading || !messageInput.trim()}>
+            {agentLoading ? "Thinking..." : "Send"}
+          </button>
+        </p>
+        {agentError ? <p role="alert">Agent error: {agentError}</p> : null}
+      </section>
+
+      {generatedInstruction ? (
+        <details>
+          <summary>Last generated Director instruction</summary>
+          <pre>{generatedInstruction}</pre>
+        </details>
+      ) : null}
+
+      <details>
+        <summary>Developer: raw Director steering</summary>
         <textarea
           value={direction}
           onChange={(event) => setDirection(event.target.value)}
@@ -270,11 +383,12 @@ export default function Home() {
         />
         <p>
           <button type="button" onClick={sendDirection} disabled={state !== "Live" || !direction.trim()}>
-            Send direction
+            Send raw direction
           </button>
         </p>
         {directionFeedback ? <p role="status">{directionFeedback}</p> : null}
-      </section>
+      </details>
+
       <section>
         <h2>Experiment log</h2>
         <ul>
@@ -285,7 +399,7 @@ export default function Home() {
           ))}
         </ul>
       </section>
-      {error ? <p role="alert">Error: {error}</p> : null}
+      {error ? <p role="alert">{error}</p> : null}
     </main>
   );
 }

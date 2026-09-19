@@ -10,6 +10,7 @@ type MediaStageProps = {
   stageLabel: string;
   settings: ReactNode;
   showControls?: boolean;
+  showBranding?: boolean;
 };
 
 export function MediaStage({
@@ -19,6 +20,7 @@ export function MediaStage({
   stageLabel,
   settings,
   showControls = false,
+  showBranding = true,
 }: MediaStageProps) {
   const backdrop = selectedRecommendation?.backdrop_url ?? recommendations[0]?.backdrop_url;
 
@@ -29,20 +31,24 @@ export function MediaStage({
         <img className="stage-backdrop" src={backdrop} alt="" aria-hidden="true" />
       ) : null}
       <div className="stage-wash" aria-hidden="true" />
-      <div className="stage-topline">
-        <div className="stage-brand">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img className="pol-logo" src="/resources/logo1.png" alt="Pol" />
-          <span className="stage-label"><span className="live-dot" />{stageLabel}</span>
-        </div>
+      <div className={`stage-topline${showBranding ? "" : " stage-topline-minimal"}`}>
+        {showBranding ? (
+          <div className="stage-brand">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img className="pol-logo" src="/resources/logo1.png" alt="Pol" />
+            <span className="stage-label"><span className="live-dot" />{stageLabel}</span>
+          </div>
+        ) : null}
         <div>{settings}</div>
       </div>
       <video ref={videoRef} className="stage-video" autoPlay playsInline controls={showControls} />
-      <div className="stage-caption">
-        <span className="eyebrow">Pol presents</span>
-        <h1>Find your next world.</h1>
-        <p>Tell us the feeling. We&apos;ll find the story.</p>
-      </div>
+      {showBranding ? (
+        <div className="stage-caption">
+          <span className="eyebrow">Pol presents</span>
+          <h1>Find your next world.</h1>
+          <p>Tell us the feeling. We&apos;ll find the story.</p>
+        </div>
+      ) : null}
     </div>
   );
 }

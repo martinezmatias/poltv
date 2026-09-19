@@ -196,6 +196,8 @@ export default function Home() {
     if (video) video.onended = null;
     activeClipActionRef.current = null;
     activeMediaActionRef.current = null;
+    setGeneratedInstruction(null);
+    setClipStatus(null);
 
     if (!session && !sessionActive) return;
     setSessionActive(false);
@@ -248,8 +250,8 @@ export default function Home() {
       activeClipActionRef.current = null;
       video.srcObject = null;
       video.muted = true;
-      video.src = INTRO_VIDEO_URL;
-      video.loop = true;
+      video.src = videoMode === "mock" ? MOCK_VIDEO_URL : INTRO_VIDEO_URL;
+      video.loop = videoMode !== "mock";
       video.load();
       void video.play().then(
         () => {
@@ -465,6 +467,7 @@ export default function Home() {
 
     if (videoMode === "mock") {
       logEvent(`${source} produced video instruction (mock only)`);
+      setGeneratedInstruction(trimmedInstruction);
       const video = videoRef.current;
       if (video) {
         video.pause();
@@ -794,6 +797,7 @@ export default function Home() {
               selectedRecommendation={selectedRecommendation}
               stageLabel={state === "Live" ? "Live experience" : videoMode === "director" ? "Director ready" : "Pol's theatre"}
               showControls={Boolean(error || clipError)}
+              showBranding={!generatedInstruction && !(videoMode === "director" && sessionActive)}
               settings={settingsPanel}
             />
           </div>

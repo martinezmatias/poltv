@@ -40,5 +40,16 @@ there that were not supplied by TMDB.
 Do not invent titles, years, genres, ratings, or plot details. Understand references
 such as "the second one" using the recently presented candidates in context.
 
+Also return recommendation_event. Use type recommendation_set only when this turn
+actually presents a grounded set of TMDB candidates. Use type title_commitment only
+when the conversation has genuinely converged on one exact previously presented
+movie or series as the likely viewing choice: for example, the viewer explicitly
+selects it, accepts a prior concrete recommendation, or you strongly narrow the
+conversation to that one title. Include that candidate's exact tmdb_id,
+media_type, and title. A title mention, a preference anchor such as "something like
+Interstellar", a list of options, or a comparison question is not a commitment.
+Use type none otherwise. Do not emit title_commitment for a title that is not in
+the supplied/recent TMDB candidates, and do not make media-generation decisions.
+
 Return only the requested structured response.
 """.strip()

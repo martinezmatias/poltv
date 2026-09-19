@@ -20,6 +20,12 @@ type VideoMode = "mock" | "clips" | "director";
 type ClipMethod = "text-to-video" | "image-to-video";
 type LogEntry = { timestamp: string; message: string };
 type ConversationMessage = { role: "user" | "assistant"; content: string };
+type RecommendationEvent = {
+  type: "none" | "recommendation_set" | "title_commitment";
+  tmdb_id: number | null;
+  media_type: "movie" | "tv" | null;
+  title: string | null;
+};
 type AgentDecision = {
   reply: string;
   suggestions?: string[];
@@ -33,6 +39,7 @@ type AgentDecision = {
   recommendation_revision?: number;
   recommendation_set_updated?: boolean;
   first_substantive_recommendation_moment?: boolean;
+  recommendation_event?: RecommendationEvent;
 };
 type MediaDecision = {
   action: "none" | "update";
@@ -51,6 +58,7 @@ type CatalogQuery = {
   year_to: number | null;
 };
 type CatalogCandidate = ComponentCatalogCandidate;
+type FiniteMediaState = "intro" | "transition" | "generated" | "director";
 
 const INTRO_VIDEO_URL = "/resources/Polintro.mp4";
 const MOCK_VIDEO_URL = "/resources/polconcassette5s.mp4";
@@ -89,10 +97,13 @@ export default function Home() {
   const connectedRef = useRef(false);
   const agentSessionIdRef = useRef("");
   const selectedProfileIdRef = useRef(DEFAULT_VIEWER_PROFILE_ID);
+  const displayedFiniteMediaRef = useRef<FiniteMediaState>("intro");
+  const previousGeneratedVideoRef = useRef<string | null>(null);
   const activeClipActionRef = useRef<string | null>(null);
   const currentConversationRevisionRef = useRef(0);
   const activeMediaActionRef = useRef<string | null>(null);
   const lastMediaRevisionRef = useRef<number | null>(null);
+  const lastMediaEventRef = useRef<RecommendationEvent | null>(null);
   const [state, setState] = useState<ConnectionState>("Idle");
   const [sessionActive, setSessionActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -153,6 +164,45 @@ export default function Home() {
     ]);
   };
 
+  const showFiniteVideo = (url: string, loop: boolean, state: FiniteMediaState) => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    video.pause();
+    video.onloadeddata = null;
+    video.srcObject = null;
+    video.muted = true;
+    video.src = url;
+    video.loop = loop;
+    video.currentTime = 0;
+    video.onloadeddata = () => {
+      void video.play().catch(() => undefined);
+    };
+    video.load();
+    void video.play().catch(() => undefined);
+    displayedFiniteMediaRef.current = state;
+  };
+
+  const showTransitionVideo = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    const alreadyTransitioning = displayedFiniteMediaRef.current === "transition"
+      && video.src.endsWith(WAITING_VIDEO_URL);
+    if (alreadyTransitioning) return;
+    showFiniteVideo(WAITING_VIDEO_URL, true, "transition");
+    logEvent("Pol VHS transition playing");
+  };
+
+  const restorePreviousGeneratedVideo = () => {
+    if (previousGeneratedVideoRef.current) {
+      showFiniteVideo(previousGeneratedVideoRef.current, true, "generated");
+      logEvent("Previous generated video restored");
+      return;
+    }
+    showFiniteVideo(INTRO_VIDEO_URL, true, "intro");
+    logEvent("Pol intro restored");
+  };
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -165,6 +215,7 @@ export default function Home() {
     // Muting is required by most browsers for autoplay with an audio track.
     video.muted = true;
     video.load();
+    displayedFiniteMediaRef.current = "intro";
     void video.play().then(
       () => {
         setSessionActive(true);
@@ -261,6 +312,8 @@ export default function Home() {
       video.muted = true;
       video.src = videoMode === "mock" ? MOCK_VIDEO_URL : INTRO_VIDEO_URL;
       video.loop = videoMode !== "mock";
+      displayedFiniteMediaRef.current = videoMode === "mock" ? "generated" : "intro";
+      if (videoMode === "mock") previousGeneratedVideoRef.current = MOCK_VIDEO_URL;
       video.load();
       void video.play().then(
         () => {
@@ -286,6 +339,7 @@ export default function Home() {
           if (!video) return;
 
           video.srcObject = stream;
+          displayedFiniteMediaRef.current = "director";
           if (!mediaReceivedRef.current) {
             mediaReceivedRef.current = true;
             logEvent("First video/media received");
@@ -395,38 +449,10 @@ export default function Home() {
     logEvent("Cinematic clip generation requested");
 
     const video = videoRef.current;
-    const previousSource = video?.src ?? "";
-    const previousLoop = video?.loop ?? false;
-    const previousStream = video?.srcObject ?? null;
-    const restorePreviousVideo = () => {
-      if (!video) return;
-      video.pause();
-      video.onloadeddata = null;
-      video.srcObject = previousStream;
-      if (previousStream) {
-        void video.play().catch(() => undefined);
-        return;
-      }
-      if (!previousSource) return;
-      video.src = previousSource;
-      video.loop = previousLoop;
-      video.load();
-      void video.play().catch(() => undefined);
-    };
-
-    if (video) {
-      video.pause();
-      video.onloadeddata = null;
-      video.srcObject = null;
-      video.muted = true;
-      video.src = WAITING_VIDEO_URL;
-      video.loop = true;
-      video.currentTime = 0;
-      video.load();
-      void video.play().catch(() => {
-        logEvent("Waiting video autoplay was blocked");
-      });
+    if (displayedFiniteMediaRef.current === "generated" && video?.src) {
+      previousGeneratedVideoRef.current = video.src;
     }
+    showTransitionVideo();
 
     try {
       const generationMethod = clipMethod;
@@ -439,7 +465,7 @@ export default function Home() {
         const message = "The selected profile has no reference image for Image-to-Video.";
         setClipError(message);
         setClipStatus(null);
-        restorePreviousVideo();
+        restorePreviousGeneratedVideo();
         logEvent(`Error: ${message}`);
         return;
       }
@@ -482,7 +508,7 @@ export default function Home() {
         selectedProfileIdRef.current !== profileIdAtStart
       ) {
         logEvent(`Stale media action ${actionId} suppressed before playback`);
-        if (activeMediaActionRef.current === actionId) restorePreviousVideo();
+        if (activeMediaActionRef.current === actionId) restorePreviousGeneratedVideo();
         setClipStatus(null);
         return;
       }
@@ -492,26 +518,14 @@ export default function Home() {
       const video = videoRef.current;
       if (video) {
         activeClipActionRef.current = actionId;
-        video.pause();
-        video.onloadeddata = null;
-        video.srcObject = null;
-        video.src = videoUrl;
-        video.loop = false;
-        video.currentTime = 0;
-        video.onended = null;
-        video.onloadeddata = () => {
-          void video.play().catch(() => {
-            setClipError("The browser blocked autoplay. Press the video play button.");
-          });
-        };
-        video.load();
-        void video.play().catch(() => undefined);
+        previousGeneratedVideoRef.current = videoUrl;
+        showFiniteVideo(videoUrl, true, "generated");
       }
     } catch (nextError) {
       const message = nextError instanceof Error ? nextError.message : String(nextError);
       setClipError(message);
       setClipStatus(null);
-      if (activeMediaActionRef.current === actionId) restorePreviousVideo();
+      if (activeMediaActionRef.current === actionId) restorePreviousGeneratedVideo();
       logEvent(`Error: cinematic clip generation failed (${message})`);
     } finally {
       setClipLoading(false);
@@ -539,11 +553,13 @@ export default function Home() {
         video.srcObject = null;
         video.muted = true;
         video.src = MOCK_VIDEO_URL;
-        video.loop = false;
+        video.loop = true;
         video.currentTime = 0;
         video.load();
         const playMock = () => video.play();
         video.onloadeddata = playMock;
+        displayedFiniteMediaRef.current = "generated";
+        previousGeneratedVideoRef.current = MOCK_VIDEO_URL;
         void playMock().then(
           () => {
             setSessionActive(true);
@@ -607,6 +623,7 @@ export default function Home() {
     recommendationRevision: number,
     recommendationSetUpdated: boolean,
     firstSubstantiveRecommendationMoment: boolean,
+    recommendationEvent: RecommendationEvent,
   ) => {
     logEvent("Media Orchestrator requested");
     try {
@@ -629,20 +646,23 @@ export default function Home() {
                   title: latestSelected.title,
                 }
               : null,
-            current_media_state: videoMode === "clips" && generatedInstruction
-              ? "generated_clip"
-              : latestSelected
+            recommendation_event: recommendationEvent,
+            last_media_event: lastMediaEventRef.current,
+            current_media_state: videoMode === "director" && state === "Live"
+              ? "director"
+              : generatedInstruction
+                ? "generated_clip"
+                : latestSelected
                 ? "selected_title"
                 : latestCandidates.length > 0
                   ? "recommendations"
-                  : videoMode === "director"
-                    ? "director"
-                    : "intro",
+                  : "intro",
             previous_visual_instruction: generatedInstruction,
             generation_status: clipLoading ? "generating" : state === "Live" && videoMode === "director" ? "streaming" : "idle",
             director_active: videoMode === "director" && state === "Live",
             reference_image_available: Boolean(selectedProfile.image),
             selected_profile_id: selectedProfile.id,
+            selected_clip_method: videoMode === "clips" ? clipMethod : null,
             recommendation_revision: recommendationRevision,
             recommendation_set_updated: recommendationSetUpdated,
             first_substantive_recommendation_moment: firstSubstantiveRecommendationMoment,
@@ -652,7 +672,7 @@ export default function Home() {
           },
         }),
       });
-      const payload = (await response.json()) as MediaDecision & { detail?: string };
+      const payload = (await response.json()) as MediaDecision & AgentDecision & { detail?: string };
       if (!response.ok) throw new Error(formatApiError(payload.detail ?? `Media Orchestrator failed (${response.status})`));
       if (payload.action === "none") {
         logEvent(`Media Orchestrator: none${payload.reason ? ` (${payload.reason})` : ""}`);
@@ -667,6 +687,9 @@ export default function Home() {
       }
       activeMediaActionRef.current = payload.media_action_id;
       lastMediaRevisionRef.current = payload.conversation_revision;
+      if (recommendationEvent.type === "title_commitment") {
+        lastMediaEventRef.current = recommendationEvent;
+      }
       const backend = videoMode === "clips" ? clipMethod : videoMode === "director" ? "director" : "mock";
       const polIntent = normalizePolIntent(backend, payload.include_pol, payload.pol_role);
       const finalPrompt = buildMediaPrompt(payload.visual_instruction, polIntent.includePol, polIntent.polRole, backend);
@@ -735,6 +758,11 @@ export default function Home() {
       if (payload.recommendation_set_updated) {
         logEvent(`Recommendation set revision ${payload.recommendation_revision ?? "?"} produced${payload.first_substantive_recommendation_moment ? " (first substantive moment)" : ""}`);
       }
+      if (payload.recommendation_event?.type === "title_commitment") {
+        logEvent(`Recommendation event: title commitment ${payload.recommendation_event.title ?? "(untitled)"} (${payload.recommendation_event.media_type ?? "unknown"}:${payload.recommendation_event.tmdb_id ?? "?"})`);
+      } else if (payload.recommendation_event?.type === "recommendation_set") {
+        logEvent("Recommendation event: grounded recommendation set");
+      }
       if (payload.catalog_retrieved || payload.catalog_error || payload.catalog_query) {
         const catalogQuery = payload.catalog_query ?? null;
         const catalogCandidates = payload.catalog_candidates ?? [];
@@ -766,6 +794,12 @@ export default function Home() {
         payload.recommendation_revision ?? 0,
         Boolean(payload.recommendation_set_updated),
         Boolean(payload.first_substantive_recommendation_moment),
+        payload.recommendation_event ?? {
+          type: "none",
+          tmdb_id: null,
+          media_type: null,
+          title: null,
+        },
       );
     } catch (nextError) {
       if (nextError instanceof TypeError && nextError.message === "Failed to fetch") {

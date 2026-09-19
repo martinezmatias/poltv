@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from mistralai import Mistral
 from pydantic import BaseModel, Field, ValidationError
 
-from backend.main_types import CatalogCandidate, CatalogQuery, CatalogSelection
+from backend.main_types import CatalogCandidate, CatalogQuery, CatalogSelection, RecommendationEvent
 from backend.tmdb import TMDBClient, TMDBError
 from prompt.catalog import (
     CATALOG_FAILURE_CONTEXT,
@@ -40,6 +40,7 @@ class AgentDecision(BaseModel):
     needs_catalog: bool = False
     catalog_query: Optional[CatalogQuery] = None
     presented_catalog: List[CatalogSelection] = Field(default_factory=list)
+    recommendation_event: RecommendationEvent = Field(default_factory=RecommendationEvent)
 
 
 class ChatRequest(BaseModel):
@@ -55,17 +56,27 @@ class ChatResponse(AgentDecision):
     catalog_retrieval_candidates: List[CatalogCandidate] = Field(default_factory=list)
     catalog_error: Optional[str] = None
     conversation_revision: int = 0
+    recommendation_revision: int = 0
+    recommendation_set_updated: bool = False
+    first_substantive_recommendation_moment: bool = False
 
 
 class MediaOrchestratorState(BaseModel):
     recent_messages: List[ConversationMessage] = Field(default_factory=list)
     recent_candidates: List[CatalogCandidate] = Field(default_factory=list)
     selected_catalog: Optional[CatalogSelection] = None
+    recommendation_event: RecommendationEvent = Field(default_factory=RecommendationEvent)
+    last_media_event: Optional[RecommendationEvent] = None
     current_media_state: Literal["intro", "generated_clip", "director", "recommendations", "selected_title"] = "intro"
     previous_visual_instruction: Optional[str] = None
     generation_status: Literal["idle", "generating", "streaming"] = "idle"
     director_active: bool = False
     reference_image_available: bool = False
+    selected_profile_id: Optional[str] = None
+    selected_clip_method: Optional[Literal["text-to-video", "image-to-video"]] = None
+    recommendation_revision: int = 0
+    recommendation_set_updated: bool = False
+    first_substantive_recommendation_moment: bool = False
     selected_backend: Literal["mock", "clips", "director"] = "mock"
     conversation_revision: int = 0
     last_media_revision: Optional[int] = None
@@ -74,6 +85,8 @@ class MediaOrchestratorState(BaseModel):
 class MediaDecision(BaseModel):
     action: Literal["none", "update"] = "none"
     visual_instruction: Optional[str] = None
+    include_pol: bool = False
+    pol_role: Literal["protagonist", "companion", "supporting", "none"] = "none"
     reason: str = ""
 
 
@@ -96,6 +109,8 @@ class ConversationSession:
     pending_generations: Dict[str, int] = field(default_factory=dict)
     last_media_revision: Optional[int] = None
     last_visual_instruction: Optional[str] = None
+    recommendation_revision: int = 0
+    has_produced_recommendations: bool = False
 
 
 class ConversationStore:
@@ -119,6 +134,8 @@ class ConversationStore:
                 pending_generations=dict(session.pending_generations),
                 last_media_revision=session.last_media_revision,
                 last_visual_instruction=session.last_visual_instruction,
+                recommendation_revision=session.recommendation_revision,
+                has_produced_recommendations=session.has_produced_recommendations,
             )
 
     def append(self, session_id: str, *messages: ConversationMessage) -> None:
@@ -127,9 +144,14 @@ class ConversationStore:
             session.messages.extend(messages)
             session.revision += 1
 
-    def set_candidates(self, session_id: str, candidates: List[CatalogCandidate]) -> None:
+    def set_candidates(self, session_id: str, candidates: List[CatalogCandidate]) -> tuple[int, bool]:
         with self._lock:
-            self._sessions.setdefault(session_id, ConversationSession()).recent_candidates = list(candidates)
+            session = self._sessions.setdefault(session_id, ConversationSession())
+            first_moment = not session.has_produced_recommendations
+            session.has_produced_recommendations = True
+            session.recommendation_revision += 1
+            session.recent_candidates = list(candidates)
+            return session.recommendation_revision, first_moment
 
     def revision(self, session_id: str) -> int:
         with self._lock:
@@ -318,6 +340,70 @@ def catalog_context(candidates: List[CatalogCandidate], error: Optional[str] = N
     )
 
 
+def normalize_recommendation_event(
+    event: RecommendationEvent,
+    available_candidates: List[CatalogCandidate],
+    selected_catalog: Optional[CatalogSelection],
+    recommendation_set_updated: bool,
+) -> RecommendationEvent:
+    """Tie semantic events to real catalog identities.
+
+    A card selection is an unambiguous title commitment. An LLM-emitted
+    commitment is accepted only when its exact identity exists in the current
+    or recently presented TMDB candidates.
+    """
+    if selected_catalog is not None:
+        matching = next(
+            (
+                candidate
+                for candidate in available_candidates
+                if candidate.tmdb_id == selected_catalog.tmdb_id
+                and candidate.media_type == selected_catalog.media_type
+            ),
+            None,
+        )
+        if matching is None:
+            return RecommendationEvent(type="recommendation_set") if recommendation_set_updated else RecommendationEvent()
+        return RecommendationEvent(
+            type="title_commitment",
+            tmdb_id=matching.tmdb_id,
+            media_type=matching.media_type,
+            title=matching.title,
+        )
+
+    if event.type == "title_commitment" and event.tmdb_id is not None and event.media_type:
+        matching = next(
+            (
+                candidate
+                for candidate in available_candidates
+                if candidate.tmdb_id == event.tmdb_id and candidate.media_type == event.media_type
+            ),
+            None,
+        )
+        if matching is not None:
+            return RecommendationEvent(
+                type="title_commitment",
+                tmdb_id=matching.tmdb_id,
+                media_type=matching.media_type,
+                title=matching.title,
+            )
+
+    if recommendation_set_updated:
+        return RecommendationEvent(type="recommendation_set")
+    return RecommendationEvent()
+
+
+def same_title_commitment(left: Optional[RecommendationEvent], right: RecommendationEvent) -> bool:
+    return bool(
+        left
+        and right
+        and left.type == "title_commitment"
+        and right.type == "title_commitment"
+        and left.tmdb_id == right.tmdb_id
+        and left.media_type == right.media_type
+    )
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     session = store.get_or_create(request.session_id)
@@ -330,6 +416,9 @@ def chat(request: ChatRequest) -> ChatResponse:
     catalog_error: Optional[str] = None
     catalog_retrieved = False
     retrieval_query: Optional[CatalogQuery] = None
+    recommendation_revision = session.recommendation_revision
+    recommendation_set_updated = False
+    first_substantive_recommendation_moment = False
 
     if decision.needs_catalog and decision.catalog_query:
         retrieval_query = decision.catalog_query
@@ -338,8 +427,6 @@ def chat(request: ChatRequest) -> ChatResponse:
             catalog_retrieved = True
             if not candidates:
                 catalog_error = "TMDB returned no matching titles"
-            else:
-                store.set_candidates(request.session_id, candidates)
         except HTTPException as exc:
             catalog_error = str(exc.detail)
         except TMDBError as exc:
@@ -358,7 +445,19 @@ def chat(request: ChatRequest) -> ChatResponse:
         if not presented_candidates:
             presented_candidates = candidates[:3]
         if presented_candidates:
-            store.set_candidates(request.session_id, presented_candidates)
+            (
+                recommendation_revision,
+                first_substantive_recommendation_moment,
+            ) = store.set_candidates(request.session_id, presented_candidates)
+            recommendation_set_updated = True
+
+    recommendation_event = normalize_recommendation_event(
+        decision.recommendation_event,
+        presented_candidates or session.recent_candidates,
+        request.selected_catalog,
+        recommendation_set_updated,
+    )
+    decision = decision.model_copy(update={"recommendation_event": recommendation_event})
 
     store.append(
         request.session_id,
@@ -376,6 +475,9 @@ def chat(request: ChatRequest) -> ChatResponse:
         catalog_retrieval_candidates=candidates,
         catalog_error=catalog_error,
         conversation_revision=store.revision(request.session_id),
+        recommendation_revision=recommendation_revision,
+        recommendation_set_updated=recommendation_set_updated,
+        first_substantive_recommendation_moment=first_substantive_recommendation_moment,
     )
 
 
@@ -390,6 +492,20 @@ def media_orchestrate(request: MediaOrchestratorRequest) -> MediaOrchestratorRes
             visual_instruction=None,
             reason="The orchestration state is stale.",
             conversation_revision=current_revision,
+        )
+    if (
+        same_title_commitment(state.recommendation_event, state.last_media_event)
+        and (
+            state.generation_status in {"generating", "streaming"}
+            or state.current_media_state in {"generated_clip", "director"}
+        )
+    ):
+        return MediaOrchestratorResponse(
+            session_id=request.session_id,
+            action="none",
+            visual_instruction=None,
+            reason="The same title commitment is already represented by current or pending media.",
+            conversation_revision=state.conversation_revision,
         )
     state_messages = json.dumps([message.model_dump() for message in state.recent_messages], ensure_ascii=False)
     state_candidates = json.dumps([candidate.model_dump() for candidate in state.recent_candidates], ensure_ascii=False)
@@ -414,6 +530,7 @@ def media_orchestrate(request: MediaOrchestratorRequest) -> MediaOrchestratorRes
         raise HTTPException(status_code=502, detail=f"Media Orchestrator failed: {format_exception(exc)}") from exc
 
     if decision.action == "none":
+        decision = decision.model_copy(update={"include_pol": False, "pol_role": "none"})
         return MediaOrchestratorResponse(
             session_id=request.session_id,
             conversation_revision=state.conversation_revision,

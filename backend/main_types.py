@@ -5,6 +5,13 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
+class RecommendationEvent(BaseModel):
+    type: Literal["none", "recommendation_set", "title_commitment"] = "none"
+    tmdb_id: Optional[int] = None
+    media_type: Optional[Literal["movie", "tv"]] = None
+    title: Optional[str] = None
+
+
 class CatalogQuery(BaseModel):
     media_type: Literal["movie", "tv", "both"] = "both"
     title_query: Optional[str] = None

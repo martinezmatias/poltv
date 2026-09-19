@@ -1,11 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { DEFAULT_VIEWER_PROFILE_ID, VIEWER_PROFILES } from "../../config/profiles";
+import { VIEWER_PROFILES } from "../../config/profiles";
 
-export function ProfileSelector() {
+type ProfileSelectorProps = {
+  selectedId: string;
+  onSelect: (profileId: string) => void;
+};
+
+export function ProfileSelector({ selectedId, onSelect }: ProfileSelectorProps) {
   const [open, setOpen] = useState(false);
-  const [selectedId, setSelectedId] = useState(DEFAULT_VIEWER_PROFILE_ID);
   const selectedProfile = VIEWER_PROFILES.find((profile) => profile.id === selectedId) ?? VIEWER_PROFILES[0];
 
   return (
@@ -35,7 +39,7 @@ export function ProfileSelector() {
               className={profile.id === selectedId ? "profile-option selected" : "profile-option"}
               key={profile.id}
               onClick={() => {
-                setSelectedId(profile.id);
+                onSelect(profile.id);
                 setOpen(false);
               }}
             >

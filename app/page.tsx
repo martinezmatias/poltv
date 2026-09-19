@@ -3,10 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { createFalClient } from "@fal-ai/client";
 import { wma, type ManagedRealtimeSession, type WmaRealtimeSession } from "@fal-ai/client/realtime";
+import { DEFAULT_VIEWER_PROFILE_ID, VIEWER_PROFILES } from "../config/profiles";
 import { VIDEO_CONFIG } from "../config/video";
 import { INITIAL_ASSISTANT_MESSAGE } from "../prompt/assistant";
-import { buildImageToVideoPrompt } from "../prompt/image-to-video";
 import { INITIAL_PROMPT } from "../prompt/initial";
+import { buildMediaPrompt, normalizePolIntent, type PolRole } from "../prompt/media";
 import { CinematicShell } from "./components/CinematicShell";
 import { MediaStage } from "./components/MediaStage";
 import { ProfileSelector } from "./components/ProfileSelector";
@@ -29,10 +30,15 @@ type AgentDecision = {
   catalog_retrieval_candidates?: CatalogCandidate[];
   catalog_error?: string | null;
   conversation_revision?: number;
+  recommendation_revision?: number;
+  recommendation_set_updated?: boolean;
+  first_substantive_recommendation_moment?: boolean;
 };
 type MediaDecision = {
   action: "none" | "update";
   visual_instruction: string | null;
+  include_pol: boolean;
+  pol_role: PolRole;
   reason: string;
   conversation_revision: number;
   media_action_id: string | null;
@@ -48,6 +54,7 @@ type CatalogCandidate = ComponentCatalogCandidate;
 
 const INTRO_VIDEO_URL = "/resources/Polintro.mp4";
 const MOCK_VIDEO_URL = "/resources/polconcassette5s.mp4";
+const WAITING_VIDEO_URL = "/resources/polchoosing5s.mp4";
 const AGENT_API_URL = process.env.NEXT_PUBLIC_AGENT_API_URL ?? "http://localhost:8000";
 
 const formatApiError = (value: unknown) => {
@@ -73,8 +80,7 @@ const cinematicClipFal = fal as unknown as {
 
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const referenceInputRef = useRef<HTMLInputElement>(null);
-  const referencePreviewUrlRef = useRef<string | null>(null);
+  const conversationHistoryRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef<ManagedRealtimeSession<WmaRealtimeSession> | null>(null);
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionStartRef = useRef<number | null>(null);
@@ -82,6 +88,7 @@ export default function Home() {
   const mediaReceivedRef = useRef(false);
   const connectedRef = useRef(false);
   const agentSessionIdRef = useRef("");
+  const selectedProfileIdRef = useRef(DEFAULT_VIEWER_PROFILE_ID);
   const activeClipActionRef = useRef<string | null>(null);
   const currentConversationRevisionRef = useRef(0);
   const activeMediaActionRef = useRef<string | null>(null);
@@ -92,8 +99,7 @@ export default function Home() {
   const [videoMode, setVideoMode] = useState<VideoMode>("mock");
   const [activeVideoMode, setActiveVideoMode] = useState<VideoMode>("mock");
   const [clipMethod, setClipMethod] = useState<ClipMethod>("text-to-video");
-  const [referenceImage, setReferenceImage] = useState<File | null>(null);
-  const [referencePreviewUrl, setReferencePreviewUrl] = useState<string | null>(null);
+  const [selectedProfileId, setSelectedProfileId] = useState(DEFAULT_VIEWER_PROFILE_ID);
   const [direction, setDirection] = useState("");
   const [directionFeedback, setDirectionFeedback] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -124,16 +130,16 @@ export default function Home() {
   const [clipStatus, setClipStatus] = useState<string | null>(null);
   const [clipError, setClipError] = useState<string | null>(null);
 
-  useEffect(() => () => {
-    if (referencePreviewUrlRef.current) URL.revokeObjectURL(referencePreviewUrlRef.current);
-  }, []);
+  useEffect(() => {
+    const history = conversationHistoryRef.current;
+    if (!history) return;
+    history.scrollTo({ top: history.scrollHeight, behavior: "smooth" });
+  }, [conversation, agentLoading]);
 
-  const replaceReferenceImage = (file: File | null) => {
-    if (referencePreviewUrlRef.current) URL.revokeObjectURL(referencePreviewUrlRef.current);
-    const nextPreviewUrl = file ? URL.createObjectURL(file) : null;
-    referencePreviewUrlRef.current = nextPreviewUrl;
-    setReferenceImage(file);
-    setReferencePreviewUrl(nextPreviewUrl);
+  const selectedProfile = VIEWER_PROFILES.find((profile) => profile.id === selectedProfileId) ?? VIEWER_PROFILES[0];
+  const selectProfile = (profileId: string) => {
+    selectedProfileIdRef.current = profileId;
+    setSelectedProfileId(profileId);
   };
 
   const logEvent = (message: string) => {
@@ -193,7 +199,10 @@ export default function Home() {
     const session = sessionRef.current;
     sessionRef.current = null;
     const video = videoRef.current;
-    if (video) video.onended = null;
+    if (video) {
+      video.onended = null;
+      video.onloadeddata = null;
+    }
     activeClipActionRef.current = null;
     activeMediaActionRef.current = null;
     setGeneratedInstruction(null);
@@ -380,9 +389,44 @@ export default function Home() {
     }
 
     setClipLoading(true);
+    const profileIdAtStart = selectedProfileId;
     setClipError(null);
     setClipStatus("Generating cinematic clip...");
     logEvent("Cinematic clip generation requested");
+
+    const video = videoRef.current;
+    const previousSource = video?.src ?? "";
+    const previousLoop = video?.loop ?? false;
+    const previousStream = video?.srcObject ?? null;
+    const restorePreviousVideo = () => {
+      if (!video) return;
+      video.pause();
+      video.onloadeddata = null;
+      video.srcObject = previousStream;
+      if (previousStream) {
+        void video.play().catch(() => undefined);
+        return;
+      }
+      if (!previousSource) return;
+      video.src = previousSource;
+      video.loop = previousLoop;
+      video.load();
+      void video.play().catch(() => undefined);
+    };
+
+    if (video) {
+      video.pause();
+      video.onloadeddata = null;
+      video.srcObject = null;
+      video.muted = true;
+      video.src = WAITING_VIDEO_URL;
+      video.loop = true;
+      video.currentTime = 0;
+      video.load();
+      void video.play().catch(() => {
+        logEvent("Waiting video autoplay was blocked");
+      });
+    }
 
     try {
       const generationMethod = clipMethod;
@@ -391,23 +435,34 @@ export default function Home() {
           ? VIDEO_CONFIG.cinematicClips.imageToVideo
           : VIDEO_CONFIG.cinematicClips.textToVideo;
 
-      if (generationMethod === "image-to-video" && !referenceImage) {
-        const message = "Image-to-Video requires a reference image before generating a clip.";
+      if (generationMethod === "image-to-video" && !selectedProfile.image) {
+        const message = "The selected profile has no reference image for Image-to-Video.";
         setClipError(message);
         setClipStatus(null);
+        restorePreviousVideo();
         logEvent(`Error: ${message}`);
         return;
       }
 
       const input: Record<string, unknown> = {
-        prompt:
-          generationMethod === "image-to-video" ? buildImageToVideoPrompt(instruction) : instruction,
+        prompt: instruction,
         duration: clipConfig.duration,
         resolution: clipConfig.resolution,
         prompt_expansion_mode: clipConfig.promptExpansionMode,
       };
       if (generationMethod === "image-to-video") {
-        input.image_url = referenceImage;
+        const profileImageUrl = new URL(selectedProfile.image, window.location.origin).toString();
+        const profileImageResponse = await fetch(profileImageUrl);
+        if (!profileImageResponse.ok) {
+          throw new Error(`Unable to load the selected profile image (${profileImageResponse.status}).`);
+        }
+        const profileImageBlob = await profileImageResponse.blob();
+        input.image_url = new File(
+          [profileImageBlob],
+          `${selectedProfile.id}-reference.${profileImageBlob.type.split("/")[1] ?? "png"}`,
+          { type: profileImageBlob.type || "image/png" },
+        );
+        logEvent(`I2V profile reference resolved: ${selectedProfile.id}`);
       } else {
         input.aspect_ratio = VIDEO_CONFIG.cinematicClips.textToVideo.aspectRatio;
       }
@@ -423,9 +478,11 @@ export default function Home() {
       const videoUrl = result.data.video.url;
       if (
         currentConversationRevisionRef.current !== conversationRevision ||
-        activeMediaActionRef.current !== actionId
+        activeMediaActionRef.current !== actionId ||
+        selectedProfileIdRef.current !== profileIdAtStart
       ) {
         logEvent(`Stale media action ${actionId} suppressed before playback`);
+        if (activeMediaActionRef.current === actionId) restorePreviousVideo();
         setClipStatus(null);
         return;
       }
@@ -435,19 +492,26 @@ export default function Home() {
       const video = videoRef.current;
       if (video) {
         activeClipActionRef.current = actionId;
+        video.pause();
+        video.onloadeddata = null;
         video.srcObject = null;
         video.src = videoUrl;
         video.loop = false;
+        video.currentTime = 0;
         video.onended = null;
+        video.onloadeddata = () => {
+          void video.play().catch(() => {
+            setClipError("The browser blocked autoplay. Press the video play button.");
+          });
+        };
         video.load();
-        void video.play().catch(() => {
-          setClipError("The browser blocked autoplay. Press the video play button.");
-        });
+        void video.play().catch(() => undefined);
       }
     } catch (nextError) {
       const message = nextError instanceof Error ? nextError.message : String(nextError);
       setClipError(message);
       setClipStatus(null);
+      if (activeMediaActionRef.current === actionId) restorePreviousVideo();
       logEvent(`Error: cinematic clip generation failed (${message})`);
     } finally {
       setClipLoading(false);
@@ -471,12 +535,16 @@ export default function Home() {
       const video = videoRef.current;
       if (video) {
         video.pause();
+        video.onloadeddata = null;
         video.srcObject = null;
         video.muted = true;
         video.src = MOCK_VIDEO_URL;
         video.loop = false;
+        video.currentTime = 0;
         video.load();
-        void video.play().then(
+        const playMock = () => video.play();
+        video.onloadeddata = playMock;
+        void playMock().then(
           () => {
             setSessionActive(true);
             setState("Live");
@@ -536,6 +604,9 @@ export default function Home() {
     recentMessages: ConversationMessage[],
     latestCandidates: CatalogCandidate[],
     latestSelected: CatalogCandidate | null,
+    recommendationRevision: number,
+    recommendationSetUpdated: boolean,
+    firstSubstantiveRecommendationMoment: boolean,
   ) => {
     logEvent("Media Orchestrator requested");
     try {
@@ -562,7 +633,7 @@ export default function Home() {
               ? "generated_clip"
               : latestSelected
                 ? "selected_title"
-                : recommendations.length > 0
+                : latestCandidates.length > 0
                   ? "recommendations"
                   : videoMode === "director"
                     ? "director"
@@ -570,7 +641,11 @@ export default function Home() {
             previous_visual_instruction: generatedInstruction,
             generation_status: clipLoading ? "generating" : state === "Live" && videoMode === "director" ? "streaming" : "idle",
             director_active: videoMode === "director" && state === "Live",
-            reference_image_available: Boolean(referenceImage),
+            reference_image_available: Boolean(selectedProfile.image),
+            selected_profile_id: selectedProfile.id,
+            recommendation_revision: recommendationRevision,
+            recommendation_set_updated: recommendationSetUpdated,
+            first_substantive_recommendation_moment: firstSubstantiveRecommendationMoment,
             selected_backend: videoMode,
             conversation_revision: conversationRevision,
             last_media_revision: lastMediaRevisionRef.current,
@@ -592,10 +667,14 @@ export default function Home() {
       }
       activeMediaActionRef.current = payload.media_action_id;
       lastMediaRevisionRef.current = payload.conversation_revision;
-      setGeneratedInstruction(payload.visual_instruction);
+      const backend = videoMode === "clips" ? clipMethod : videoMode === "director" ? "director" : "mock";
+      const polIntent = normalizePolIntent(backend, payload.include_pol, payload.pol_role);
+      const finalPrompt = buildMediaPrompt(payload.visual_instruction, polIntent.includePol, polIntent.polRole, backend);
+      setGeneratedInstruction(finalPrompt);
       logEvent(`Media Orchestrator: update (${payload.media_action_id})`);
+      logEvent(`Media intent: include_pol=${polIntent.includePol}, pol_role=${polIntent.polRole}, profile=${selectedProfile.id}, image_available=${Boolean(selectedProfile.image)}`);
       sendVideoInstruction(
-        payload.visual_instruction,
+        finalPrompt,
         "Media Orchestrator",
         payload.media_action_id,
         payload.conversation_revision,
@@ -653,6 +732,9 @@ export default function Home() {
 
       setConversation((current) => [...current, { role: "assistant", content: payload.reply }]);
       setSuggestions(payload.suggestions ?? []);
+      if (payload.recommendation_set_updated) {
+        logEvent(`Recommendation set revision ${payload.recommendation_revision ?? "?"} produced${payload.first_substantive_recommendation_moment ? " (first substantive moment)" : ""}`);
+      }
       if (payload.catalog_retrieved || payload.catalog_error || payload.catalog_query) {
         const catalogQuery = payload.catalog_query ?? null;
         const catalogCandidates = payload.catalog_candidates ?? [];
@@ -681,6 +763,9 @@ export default function Home() {
         conversation.slice(-6),
         payload.catalog_candidates ?? recommendations,
         selectedCandidate ?? selectedRecommendation,
+        payload.recommendation_revision ?? 0,
+        Boolean(payload.recommendation_set_updated),
+        Boolean(payload.first_substantive_recommendation_moment),
       );
     } catch (nextError) {
       if (nextError instanceof TypeError && nextError.message === "Failed to fetch") {
@@ -715,22 +800,10 @@ export default function Home() {
             </label>
             {clipMethod === "image-to-video" ? (
               <div className="reference-control">
-                <span>Reference image</span>
-                <input ref={referenceInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => {
-                  const file = event.target.files?.[0] ?? null;
-                  if (file && !file.type.startsWith("image/")) {
-                    replaceReferenceImage(null);
-                    setClipError("Please select a PNG, JPEG, or WebP image.");
-                    event.currentTarget.value = "";
-                    return;
-                  }
-                  setClipError(null);
-                  replaceReferenceImage(file);
-                }} />
-                {referencePreviewUrl ? <button type="button" className="text-button" onClick={() => {
-                  replaceReferenceImage(null);
-                  if (referenceInputRef.current) referenceInputRef.current.value = "";
-                }} disabled={clipLoading}>Remove reference</button> : <small>No reference selected.</small>}
+                <span>Reference: {selectedProfile.name}</span>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img className="profile-reference-preview" src={selectedProfile.image} alt={`${selectedProfile.name} reference`} />
+                <small>Uses the selected profile image. No upload required.</small>
               </div>
             ) : null}
           </>
@@ -757,11 +830,11 @@ export default function Home() {
     <CinematicShell
       conversation={(
         <>
-          <ProfileSelector />
+          <ProfileSelector selectedId={selectedProfileId} onSelect={selectProfile} />
           <div className="conversation-intro">
             <h1>{INITIAL_ASSISTANT_MESSAGE}</h1>
           </div>
-          <div className="conversation-history" role="log" aria-live="polite">
+          <div ref={conversationHistoryRef} className="conversation-history" role="log" aria-live="polite">
             {conversation.filter((message, index) => !(index === 0 && message.role === "assistant" && message.content === INITIAL_ASSISTANT_MESSAGE)).map((message, index) => (
               <article className={`message message-${message.role}`} key={`${message.role}-${index}`}>
                 <span className="message-label">{message.role === "assistant" ? "Pol" : "You"}</span>

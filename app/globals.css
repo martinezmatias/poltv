@@ -97,6 +97,7 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .settings-popover[open] .settings-panel { position:fixed; top:68px; right:24px; z-index:20; }
 .settings-panel > label, .reference-control { display:grid; gap:6px; color:var(--muted); font-size:.75rem; margin-top:14px; }
 .settings-panel select, .settings-panel input, .settings-panel textarea { width:100%; color:var(--ink); background:#11110f; border:1px solid var(--line); border-radius:7px; padding:8px; }
+.profile-reference-preview { width:56px; height:56px; object-fit:cover; border-radius:8px; border:1px solid var(--line); }
 .settings-actions { display:flex; gap:8px; margin-top:18px; }
 .primary-button, .secondary-button { border-radius:7px !important; text-align:center !important; cursor:pointer !important; }
 .primary-button { background:var(--accent) !important; color:#241e16 !important; }

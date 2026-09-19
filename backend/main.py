@@ -25,7 +25,7 @@ class ConversationMessage(BaseModel):
 class AgentDecision(BaseModel):
     reply: str
     update_video: bool
-    director_instruction: Optional[str] = None
+    video_instruction: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
@@ -135,9 +135,9 @@ def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=502, detail="Mistral returned no assistant message") from exc
 
     decision = parse_decision(content)
-    if not decision.update_video and decision.director_instruction is not None:
-        decision = decision.model_copy(update={"director_instruction": None})
-    if decision.update_video and not decision.director_instruction:
+    if not decision.update_video and decision.video_instruction is not None:
+        decision = decision.model_copy(update={"video_instruction": None})
+    if decision.update_video and not decision.video_instruction:
         raise HTTPException(status_code=502, detail="Mistral requested a video update without an instruction")
 
     store.append(

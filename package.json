@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "agent": ".venv/bin/uvicorn backend.main:app --reload --port 8000",
+    "dev:all": "concurrently -k -n frontend,agent \"npm run dev\" \"npm run agent\"",
     "build": "next build",
     "start": "next start",
     "lint": "eslint ."
@@ -19,6 +21,7 @@
     "@types/node": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "concurrently": "^9.2.1",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.3.5",
     "typescript": "latest"

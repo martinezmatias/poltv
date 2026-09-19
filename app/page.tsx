@@ -7,19 +7,31 @@ import { INITIAL_ASSISTANT_MESSAGE } from "../prompt/assistant";
 import { INITIAL_PROMPT } from "../prompt/initial";
 
 type ConnectionState = "Idle" | "Connecting" | "Live" | "Error";
+type VideoMode = "mock" | "clips" | "director";
 type LogEntry = { timestamp: string; message: string };
 type ConversationMessage = { role: "user" | "assistant"; content: string };
 type AgentDecision = {
   reply: string;
   update_video: boolean;
-  director_instruction: string | null;
+  video_instruction: string | null;
 };
 
 const TEST_DURATION_MS = 60_000;
 const MOCK_VIDEO_URL = "/resources/zIYbTMoXfFY0e3iIUQ0bq_minimax-h3.mp4";
 const AGENT_API_URL = process.env.NEXT_PUBLIC_AGENT_API_URL ?? "http://localhost:8000";
+const TEXT_TO_VIDEO_ENDPOINT = "minimax/h3-max/text-to-video";
 
 const fal = createFalClient({ proxyUrl: "/api/fal/proxy" });
+const textToVideoFal = fal as unknown as {
+  subscribe: (
+    endpoint: string,
+    options: {
+      input: Record<string, unknown>;
+      logs: boolean;
+      onQueueUpdate: (status: { status: string }) => void;
+    },
+  ) => Promise<{ data: { video: { url: string } } }>;
+};
 
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -33,7 +45,7 @@ export default function Home() {
   const [state, setState] = useState<ConnectionState>("Idle");
   const [sessionActive, setSessionActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [mockMode, setMockMode] = useState(true);
+  const [videoMode, setVideoMode] = useState<VideoMode>("mock");
   const [direction, setDirection] = useState("");
   const [directionFeedback, setDirectionFeedback] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -44,6 +56,9 @@ export default function Home() {
   const [agentLoading, setAgentLoading] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
   const [generatedInstruction, setGeneratedInstruction] = useState<string | null>(null);
+  const [clipLoading, setClipLoading] = useState(false);
+  const [clipStatus, setClipStatus] = useState<string | null>(null);
+  const [clipError, setClipError] = useState<string | null>(null);
 
   const logEvent = (message: string) => {
     const elapsed = sessionStartRef.current === null ? 0 : (performance.now() - sessionStartRef.current) / 1000;
@@ -84,7 +99,7 @@ export default function Home() {
     if (session) {
       session.send({ type: "stop" });
       void session.close();
-    } else if (mockMode && video) {
+    } else if (videoMode !== "director" && video) {
       video.pause();
       video.removeAttribute("src");
       video.load();
@@ -110,7 +125,7 @@ export default function Home() {
     setDirectionFeedback(null);
     logEvent("Session start requested");
 
-    if (mockMode) {
+    if (videoMode !== "director") {
       const video = videoRef.current;
       if (!video) return;
 
@@ -232,14 +247,69 @@ export default function Home() {
     }
   };
 
-  const sendDirectorInstruction = (instruction: string, source: string) => {
+  const generateCinematicClip = async (instruction: string) => {
+    if (clipLoading) {
+      logEvent("Cinematic clip generation already in progress");
+      return;
+    }
+
+    setClipLoading(true);
+    setClipError(null);
+    setClipStatus("Generating cinematic clip...");
+    logEvent("Cinematic clip generation requested");
+
+    try {
+      const result = await textToVideoFal.subscribe(TEXT_TO_VIDEO_ENDPOINT, {
+        input: {
+          prompt: instruction,
+          duration: 5,
+          resolution: "480P",
+          prompt_expansion_mode: "disabled",
+          aspect_ratio: "16:9",
+        },
+        logs: true,
+        onQueueUpdate: (status) => {
+          if (status.status === "IN_QUEUE") setClipStatus("Cinematic clip queued...");
+          if (status.status === "IN_PROGRESS") setClipStatus("Generating cinematic clip...");
+        },
+      });
+      const videoUrl = result.data.video.url;
+      setClipStatus("Cinematic clip ready");
+      logEvent("Cinematic clip ready");
+
+      const video = videoRef.current;
+      if (video) {
+        video.srcObject = null;
+        video.src = videoUrl;
+        video.loop = false;
+        video.load();
+        void video.play().catch(() => {
+          setClipError("The browser blocked autoplay. Press the video play button.");
+        });
+      }
+    } catch (nextError) {
+      const message = nextError instanceof Error ? nextError.message : String(nextError);
+      setClipError(message);
+      setClipStatus(null);
+      logEvent(`Error: cinematic clip generation failed (${message})`);
+    } finally {
+      setClipLoading(false);
+    }
+  };
+
+  const sendVideoInstruction = (instruction: string, source: string) => {
     const trimmedInstruction = instruction.trim();
     if (!trimmedInstruction) return;
 
     setGeneratedInstruction(trimmedInstruction);
 
-    if (mockMode) {
-      logEvent(`${source} produced Director instruction (mock only)`);
+    if (videoMode === "mock") {
+      logEvent(`${source} produced video instruction (mock only)`);
+      return;
+    }
+
+    if (videoMode === "clips") {
+      void generateCinematicClip(trimmedInstruction);
       return;
     }
 
@@ -269,7 +339,7 @@ export default function Home() {
     if (!trimmedDirection || state !== "Live") return;
 
     setDirection("");
-    sendDirectorInstruction(trimmedDirection, "Raw");
+    sendVideoInstruction(trimmedDirection, "Raw");
   };
 
   const sendMessage = async () => {
@@ -300,10 +370,10 @@ export default function Home() {
 
       setConversation((current) => [...current, { role: "assistant", content: payload.reply }]);
       if (payload.update_video) {
-        if (!payload.director_instruction) {
-          throw new Error("Agent requested a video update without a Director instruction.");
+        if (!payload.video_instruction) {
+          throw new Error("Agent requested a video update without a video instruction.");
         }
-        sendDirectorInstruction(payload.director_instruction, "Agent");
+        sendVideoInstruction(payload.video_instruction, "Agent");
       }
     } catch (nextError) {
       if (nextError instanceof TypeError && nextError.message === "Failed to fetch") {
@@ -318,18 +388,23 @@ export default function Home() {
 
   return (
     <main>
-      <p>Mode: {mockMode ? "MOCK" : "LIVE DIRECTOR"}</p>
+      <p>
+        Mode: {videoMode === "mock" ? "MOCK" : videoMode === "clips" ? "CINEMATIC CLIPS" : "LIVE DIRECTOR"}
+      </p>
       <p>Status: {state}</p>
       <video ref={videoRef} autoPlay playsInline controls />
       <p>
         <label>
-          <input
-            type="checkbox"
-            checked={mockMode}
-            onChange={(event) => setMockMode(event.target.checked)}
+          Video mode:{" "}
+          <select
+            value={videoMode}
+            onChange={(event) => setVideoMode(event.target.value as VideoMode)}
             disabled={state === "Connecting" || state === "Live"}
-          />{" "}
-          Use local mock video
+          >
+            <option value="mock">Mock</option>
+            <option value="clips">Cinematic Clips</option>
+            <option value="director">Director</option>
+          </select>
         </label>
       </p>
       <p>
@@ -362,12 +437,14 @@ export default function Home() {
             {agentLoading ? "Thinking..." : "Send"}
           </button>
         </p>
+        {clipStatus ? <p role="status">{clipStatus}</p> : null}
+        {clipError ? <p role="alert">Clip error: {clipError}</p> : null}
         {agentError ? <p role="alert">Agent error: {agentError}</p> : null}
       </section>
 
       {generatedInstruction ? (
         <details>
-          <summary>Last generated Director instruction</summary>
+          <summary>Last generated video instruction</summary>
           <pre>{generatedInstruction}</pre>
         </details>
       ) : null}
@@ -379,10 +456,14 @@ export default function Home() {
           onChange={(event) => setDirection(event.target.value)}
           placeholder="Enter a raw Director direction"
           rows={4}
-          disabled={state !== "Live"}
+          disabled={videoMode !== "director" || state !== "Live"}
         />
         <p>
-          <button type="button" onClick={sendDirection} disabled={state !== "Live" || !direction.trim()}>
+          <button
+            type="button"
+            onClick={sendDirection}
+            disabled={videoMode !== "director" || state !== "Live" || !direction.trim()}
+          >
             Send raw direction
           </button>
         </p>

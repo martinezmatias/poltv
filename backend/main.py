@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 from uuid import uuid4
 from threading import Lock
 from dataclasses import dataclass, field
@@ -16,8 +17,10 @@ from pydantic import BaseModel, Field, ValidationError
 from backend.main_types import CatalogCandidate, CatalogQuery, CatalogSelection, RecommendationEvent
 from backend.tmdb import TMDBClient, TMDBError
 from prompt.catalog import (
+    ALREADY_RECOMMENDED_CONTEXT,
     CATALOG_FAILURE_CONTEXT,
     CATALOG_RESULTS_CONTEXT,
+    PREFERENCE_CONTEXT,
     RECENT_CANDIDATES_CONTEXT,
     SELECTED_CANDIDATE_CONTEXT,
 )
@@ -106,6 +109,8 @@ class MediaOrchestratorResponse(MediaDecision):
 class ConversationSession:
     messages: List[ConversationMessage] = field(default_factory=list)
     recent_candidates: List[CatalogCandidate] = field(default_factory=list)
+    recommended_titles: List[CatalogSelection] = field(default_factory=list)
+    preferences: List[str] = field(default_factory=list)
     revision: int = 0
     pending_generations: Dict[str, int] = field(default_factory=dict)
     last_media_revision: Optional[int] = None
@@ -131,6 +136,8 @@ class ConversationStore:
             return ConversationSession(
                 messages=list(session.messages),
                 recent_candidates=list(session.recent_candidates),
+                recommended_titles=list(session.recommended_titles),
+                preferences=list(session.preferences),
                 revision=session.revision,
                 pending_generations=dict(session.pending_generations),
                 last_media_revision=session.last_media_revision,
@@ -152,7 +159,25 @@ class ConversationStore:
             session.has_produced_recommendations = True
             session.recommendation_revision += 1
             session.recent_candidates = list(candidates)
+            known = {(title.media_type, title.tmdb_id) for title in session.recommended_titles}
+            for candidate in candidates:
+                key = (candidate.media_type, candidate.tmdb_id)
+                if key not in known:
+                    session.recommended_titles.append(
+                        CatalogSelection(
+                            tmdb_id=candidate.tmdb_id,
+                            media_type=candidate.media_type,
+                            title=candidate.title,
+                        )
+                    )
+                    known.add(key)
             return session.recommendation_revision, first_moment
+
+    def add_preference(self, session_id: str, preference: str) -> None:
+        with self._lock:
+            session = self._sessions.setdefault(session_id, ConversationSession())
+            if preference.strip() and preference.strip() not in session.preferences:
+                session.preferences.append(preference.strip())
 
     def revision(self, session_id: str) -> int:
         with self._lock:
@@ -254,6 +279,27 @@ def build_model_messages(
                 "role": "system",
                 "content": RECENT_CANDIDATES_CONTEXT.format(
                     candidates=json.dumps([candidate.model_dump() for candidate in session.recent_candidates])
+                ),
+            }
+        )
+    if session.recommended_titles:
+        messages.append(
+            {
+                "role": "system",
+                "content": ALREADY_RECOMMENDED_CONTEXT.format(
+                    titles=json.dumps(
+                        [title.model_dump() for title in session.recommended_titles],
+                        ensure_ascii=False,
+                    )
+                ),
+            }
+        )
+    if session.preferences:
+        messages.append(
+            {
+                "role": "system",
+                "content": PREFERENCE_CONTEXT.format(
+                    preferences=json.dumps(session.preferences[-12:], ensure_ascii=False)
                 ),
             }
         )
@@ -405,13 +451,132 @@ def same_title_commitment(left: Optional[RecommendationEvent], right: Recommenda
     )
 
 
+def normalized_title(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def explicitly_references_previous_title(message: str, titles: List[CatalogSelection]) -> bool:
+    normalized_message = normalized_title(message)
+    refinement_markers = ("more", "darker", "funnier", "newer", "another", "different", "something else")
+    discussion_markers = (
+        "again",
+        "go back",
+        "return to",
+        "reconsider",
+        "tell me more",
+        "who stars",
+        "who is in",
+        "when was",
+        "released",
+        "is it",
+        "about",
+    )
+    if titles and not any(marker in normalized_message for marker in refinement_markers):
+        if normalized_message.startswith(("who ", "when ", "tell me", "is it ", "what about it")):
+            return True
+    for title in titles:
+        normalized = normalized_title(title.title)
+        if not normalized or normalized not in normalized_message:
+            continue
+        if normalized_message == normalized or any(marker in normalized_message for marker in discussion_markers):
+            return True
+    return False
+
+
+def repeated_presented_title(
+    decision: AgentDecision,
+    recommended_titles: List[CatalogSelection],
+) -> Optional[str]:
+    known = {(title.media_type, title.tmdb_id) for title in recommended_titles}
+    for selection in decision.presented_catalog:
+        if (selection.media_type, selection.tmdb_id) in known:
+            return selection.title
+    return None
+
+
+def classify_turn(message: str, session: ConversationSession) -> Literal["preference", "refinement", "discussion"]:
+    """Classify whether a turn changes the requested experience or discusses a title.
+
+    This is intentionally conservative: once a recommendation exists, a message
+    that is not clearly a title-information question or an explicit confirmation
+    is treated as a refinement and must obtain a new candidate.
+    """
+    if not session.recent_candidates:
+        return "preference"
+
+    text = normalized_title(message)
+    current_titles = [normalized_title(candidate.title) for candidate in session.recent_candidates]
+    if any(title and (text == title or title in text) for title in current_titles):
+        if not any(marker in text for marker in ("more like", "something like", "different", "another")):
+            return "discussion"
+
+    discussion_prefixes = (
+        "who ",
+        "when ",
+        "tell me",
+        "what is it",
+        "whats it",
+        "is it ",
+        "where can i",
+        "can i watch",
+    )
+    commitment_phrases = (
+        "lets go with",
+        "let us go with",
+        "play it",
+        "watch it",
+        "ill take",
+        "sounds good",
+        "that one",
+        "yes",
+        "go with it",
+    )
+    if text.startswith(discussion_prefixes) or any(phrase in text for phrase in commitment_phrases):
+        return "discussion"
+    return "refinement"
+
+
+def refinement_catalog_query(session: ConversationSession, decision: AgentDecision) -> CatalogQuery:
+    if decision.catalog_query is not None:
+        previous_titles = {normalized_title(title.title) for title in session.recommended_titles}
+        if decision.catalog_query.title_query and normalized_title(decision.catalog_query.title_query) in previous_titles:
+            return decision.catalog_query.model_copy(update={"title_query": None})
+        return decision.catalog_query
+    media_types = {candidate.media_type for candidate in session.recent_candidates}
+    media_type: Literal["movie", "tv", "both"] = next(iter(media_types)) if len(media_types) == 1 else "both"
+    return CatalogQuery(media_type=media_type)
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     session = store.get_or_create(request.session_id)
     user_message = ConversationMessage(role="user", content=request.message)
+    turn_intent = "discussion" if request.selected_catalog is not None else classify_turn(request.message, session)
+    if turn_intent in {"preference", "refinement"}:
+        store.add_preference(request.session_id, request.message)
+        if request.message.strip() not in session.preferences:
+            session.preferences.append(request.message.strip())
+    turn_contexts: List[str] = []
+    if turn_intent == "refinement":
+        turn_contexts.append(
+            "APPLICATION TURN POLICY: This is a PREFERENCE REFINEMENT. The viewer is adding or changing a content preference. "
+            "Accumulate it with prior preferences, retrieve a new candidate, and do not re-describe or recommend the current title."
+        )
+    elif turn_intent == "discussion":
+        turn_contexts.append(
+            "APPLICATION TURN POLICY: This is a TITLE DISCUSSION or explicit confirmation. Answer the question about the current title "
+            "or acknowledge the selection; do not force a new recommendation unless the viewer asks for a different option."
+        )
     decision = validate_decision(
-        request_agent(build_model_messages(session, user_message, request.selected_catalog))
+        request_agent(build_model_messages(session, user_message, request.selected_catalog, extra_system_contexts=turn_contexts))
     )
+    if turn_intent == "refinement":
+        decision = decision.model_copy(
+            update={
+                "needs_catalog": True,
+                "catalog_query": refinement_catalog_query(session, decision),
+            }
+        )
     candidates: List[CatalogCandidate] = []
     presented_candidates: List[CatalogCandidate] = []
     catalog_error: Optional[str] = None
@@ -433,10 +598,51 @@ def chat(request: ChatRequest) -> ChatResponse:
         except TMDBError as exc:
             catalog_error = str(exc)
 
-        grounding_messages = build_model_messages(session, user_message, request.selected_catalog)
-        grounding_messages.append({"role": "system", "content": catalog_context(candidates, catalog_error)})
-        decision = validate_decision(request_agent(grounding_messages))
-        decision = decision.model_copy(update={"needs_catalog": False, "catalog_query": None})
+        allow_previous_titles = request.selected_catalog is not None or explicitly_references_previous_title(
+            request.message,
+            session.recommended_titles,
+        )
+        previously_recommended_keys = {
+            (title.media_type, title.tmdb_id) for title in session.recommended_titles
+        }
+        grounding_candidates = (
+            candidates
+            if allow_previous_titles
+            else [
+                candidate
+                for candidate in candidates
+                if (candidate.media_type, candidate.tmdb_id) not in previously_recommended_keys
+            ]
+        )
+        repeated_title: Optional[str] = None
+        for attempt in range(3):
+            grounding_messages = build_model_messages(
+                session,
+                user_message,
+                request.selected_catalog,
+                extra_system_contexts=turn_contexts,
+            )
+            grounding_messages.append(
+                {"role": "system", "content": catalog_context(grounding_candidates, catalog_error)}
+            )
+            if attempt > 0:
+                grounding_messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            f"The proposed title '{repeated_title}' has already been recommended. "
+                            "Choose a DIFFERENT movie or series that satisfies the user's accumulated "
+                            "preferences. Do not use any title from the excluded list. Return only the "
+                            "short TV-friendly response and structured recommendation."
+                        ),
+                    }
+                )
+            decision = validate_decision(request_agent(grounding_messages))
+            decision = decision.model_copy(update={"needs_catalog": False, "catalog_query": None})
+            repeated_title = repeated_presented_title(decision, session.recommended_titles)
+            if repeated_title is None or allow_previous_titles:
+                break
+
         candidate_by_key = {(candidate.media_type, candidate.tmdb_id): candidate for candidate in candidates}
         presented_candidates = [
             candidate_by_key[(selection.media_type, selection.tmdb_id)]
@@ -444,7 +650,16 @@ def chat(request: ChatRequest) -> ChatResponse:
             if (selection.media_type, selection.tmdb_id) in candidate_by_key
         ]
         if not presented_candidates:
-            presented_candidates = candidates[:3]
+            presented_candidates = grounding_candidates[:1]
+        if repeated_title is not None and not allow_previous_titles:
+            decision = decision.model_copy(
+                update={
+                    "reply": "I’ll find a different match for that.",
+                    "presented_catalog": [],
+                    "recommendation_event": RecommendationEvent(),
+                }
+            )
+            presented_candidates = []
         if presented_candidates:
             (
                 recommendation_revision,

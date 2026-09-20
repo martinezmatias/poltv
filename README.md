@@ -153,7 +153,9 @@ If port 3000 is already occupied, use the two-terminal workflow instead. The com
 Mock mode is selected by default. It plays:
 
 `public/resources/Polintro.mp4` is used for the opening intro. Mock visual actions use
-`public/resources/polconcassette5s.mp4`.
+`public/resources/polconcassette5s.mp4`. While a finite T2V/I2V generation is being
+processed, the UI loops `public/resources/polchoosing5s.mp4` as a waiting scene and
+replaces it with the generated result when ready.
 
 To test the conversation without paying for Director:
 
@@ -186,7 +188,11 @@ Cinematic Clips supports manually selected Text-to-Video and Image-to-Video gene
 
 The conversation remains usable while a clip is generating. A second clip request is ignored until the current one completes.
 
-For **Text-to-Video**, the current development settings are five seconds, 480P, 16:9, and prompt expansion disabled. For **Image-to-Video**, select the method and provide one PNG, JPEG, or WebP reference image. The current settings are five seconds, 768P, and prompt expansion disabled. The generated I2V prompt explicitly asks fal to preserve the reference subject as a recognizable central character in the requested scene. The selected browser `File` is auto-uploaded by the fal client as the documented `image_url` input; it is not persisted by the application. If no image is selected, no fal request is submitted.
+Every executed Text-to-Video update includes Pol as a meaningful character, normally
+the protagonist. If Pol would not add value, the Media Orchestrator should return
+`none` instead of producing a generic Pol-less T2V scene.
+
+For **Text-to-Video**, the current development settings are five seconds, 480P, 16:9, and prompt expansion disabled. For **Image-to-Video**, select the method and the currently selected viewer profile supplies the existing image reference. No upload control is used. The current settings are five seconds, 768P, and prompt expansion disabled. The selected profile image is loaded from `public/resources/users` and passed through the existing fal client image-input path; it is not persisted by the application. The viewer remains the primary I2V subject, while Pol may appear as a textual companion/supporting character.
 
 See the official [H3 Max Image-to-Video API documentation](https://fal.ai/models/minimax/h3-max/image-to-video/api) for the current request and file-handling contract.
 

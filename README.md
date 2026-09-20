@@ -1,117 +1,191 @@
-# BNAHack 2026
+# PolTV
 
-An experimental conversational TV prototype. The viewer watches a prerecorded, mocked, cinematic-clip, or live Director visual experience while a Mistral-powered assistant learns what they want to watch. A separate Media Orchestrator may decide that a meaningful visual update would enrich the recommendation conversation.
+PolTV is a cinematic, conversational movie and series discovery experience. Pol
+helps viewers describe what they feel like watching, finds real catalog titles,
+and can create original visual interpretations of that viewing experience.
 
-This repository currently contains:
+The application is designed for a TV-style presentation:
 
-- Step 1A: start and display a MiniMax H3 Max Director WebRTC stream.
-- Step 1B: manually steer the active Director session without restarting it.
-- Step 2A: use Mistral through a small FastAPI backend to conduct a recommendation conversation.
-- Step 2B: manually select Mock, Cinematic Clips, or Director; Cinematic Clips supports MiniMax H3 Max Text-to-Video and Image-to-Video for independent short clips.
-- Step 3A: use TMDB-grounded retrieval for conversational movie and TV recommendations.
-- Step 3B: display the current TMDB recommendation set as selectable poster cards.
-- Step 3D: separate recommendation reasoning from Media Orchestrator decisions and media execution.
+- conversation and contextual suggestions on the left;
+- cinematic media, real recommendation cards, and Around PolTV on the right;
+- concise, readable responses suitable for viewing from a distance.
 
-Voice input, persistence, and later roadmap steps are not implemented.
+## Features
+
+### Conversational discovery
+
+The language-model-backed recommendation agent:
+
+- handles multi-turn preference refinement;
+- keeps responses short and TV-friendly;
+- understands references such as “the second one” and “more like the first”;
+- accumulates compatible preferences instead of treating every short follow-up as a new conversation;
+- avoids repeatedly recommending the same title when the viewer asks for a different option;
+- supports movies and TV series;
+- retrieves factual candidates from TMDB when catalog grounding is useful;
+- provides 0–4 contextual quick suggestions;
+- can identify a concrete title commitment separately from a general title mention.
+
+The recommendation agent is independent from visual-media generation. A response is
+returned without waiting for a video job to finish.
+
+### Catalog recommendations
+
+TMDB-backed recommendations use normalized catalog data, including:
+
+- title and media type;
+- release or first-air year;
+- genres;
+- poster and backdrop URLs;
+- rating;
+- overview;
+- runtime when available.
+
+Watch-provider availability is also retrieved from TMDB for Spain by default
+(`TMDB_WATCH_PROVIDER_COUNTRY=ES`). Subscription providers are shown first, with
+additional availability in the details popup when available. The data is powered by
+JustWatch and is labelled in the UI.
+
+Recommendations appear as a small horizontal rail. Selecting a poster opens a
+metadata popup with Pol’s explanation and a Save to My Picks action.
+
+### My Picks
+
+Viewers can save and remove recommendations for the currently selected profile.
+Lists are independent per profile and persist locally across application restarts.
+
+The profile page shows the selected profile’s avatar, name, privacy setting, and
+saved **My Picks**. Saved data is kept separately from social recommendation
+activity.
+
+### Around PolTV
+
+Around PolTV is a compact social-discovery carousel showing recent recommendations
+made to other profiles. It can include the other profile’s avatar, request summary,
+poster, and title. The active profile’s own activity is excluded.
+
+Around PolTV is hidden during the opening/idle cinematic state and before actual
+recommendations are displayed. A profile can mark its recommendation activity
+private, which removes that profile’s events from other users’ Around PolTV feed.
+
+### Cinematic media
+
+The manually selected visual mode remains authoritative:
+
+- **Mock** — uses local media and never calls the paid generation service;
+- **Cinematic Clips** — supports Text-to-Video and Image-to-Video;
+- **Director** — supports the live H3 Max Director WebRTC session and same-session steering.
+
+The opening experience uses `public/resources/Polintro.mp4`. Mock visual actions use
+`public/resources/polconcassette5s.mp4`. While a finite clip is being generated,
+`public/resources/polchoosing5s.mp4` is used as the waiting/transition visual.
+
+Text-to-Video updates always include Pol as a meaningful character, normally as the
+protagonist. Image-to-Video uses the selected profile’s existing image as the
+reference; no upload flow is used. The viewer remains the grounded subject, while
+Pol may appear as a companion or supporting character.
+
+Generated media is original. Real titles can provide broad genre, tone, setting,
+and pacing inspiration, but generated scenes must not recreate copyrighted scenes,
+actors, protected characters, posters, or dialogue.
+
+The Media Orchestrator independently decides whether a visual update adds value.
+It is conservative during early preference gathering, strongly considers the first
+substantive recommendation moment and concrete title commitments, and avoids
+duplicate or stale generations. Aggressive Generation is available as a development
+policy for testing progressive visual evolution.
+
+Finite generated clips continue the conversation asynchronously after playback when
+appropriate. Duplicate continuation and stale-generation protections prevent old
+media results from corrupting newer conversation state.
+
+### Voice input
+
+The chat includes optional browser speech recognition using the Web Speech API. It
+is single-turn, places the transcription into the existing text input, and never
+sends automatically. Unsupported browsers and denied microphone permissions leave
+normal typed chat available.
 
 ## Architecture
 
-The browser owns the Director session. FastAPI/Mistral never connects to fal directly:
-
 ```text
 Browser / Next.js
-  ├── conversation UI
-  ├── Mock video, independent Text-to-Video/Image-to-Video clips, or live Director WebRTC stream
-  ├── sends natural-language messages to FastAPI
-  └── sends video instructions to the selected visual mode
+  ├── TV-oriented conversation UI
+  ├── profile selector and My Picks interaction
+  ├── TMDB recommendation cards and metadata popup
+  ├── Around PolTV carousel
+  ├── Mock, Cinematic Clips, and Director presentation
+  └── sends conversation and orchestration requests to FastAPI
           │
           ▼
-FastAPI / Mistral
-  ├── keeps in-memory conversation history by session_id
-  ├── retrieves compact TMDB candidates when Mistral requests catalog grounding
-  ├── returns recommendation reply, catalog data, and quick suggestions immediately
-  └── evaluates media separately through the Media Orchestrator
+FastAPI backend
+  ├── language-model recommendation conversation
+  ├── controlled TMDB retrieval and normalization
+  ├── Media Orchestrator decision
+  ├── profile-aware My Picks and Around PolTV persistence helpers
+  └── server-side fal proxy integration
 ```
 
-The Recommendation Agent only handles conversation and catalog recommendations. The
-Media Orchestrator separately decides whether a meaningful visual update is useful;
-the browser harness then executes that backend-neutral instruction through the
-manually selected Mock, Cinematic Clips, or Director mode.
+The recommendation agent decides what to say and recommend. The Media Orchestrator
+decides whether the visual experience should react. The application harness executes
+the manually selected visual mode and owns asynchronous generation, revision IDs,
+stale-result suppression, and media lifecycle state.
 
-The live Director integration uses fal's realtime WMA/WebRTC contract at `minimax/h3-max/director`. The browser uses the server proxy at `/api/fal/proxy`; the fal key is never sent to client code.
+Credentials for the language model, TMDB, and fal remain server-side. The browser
+does not receive those secrets.
 
 ## Requirements
 
 - Node.js and npm
 - Python 3.9 or newer
-- A Mistral API key for the conversational agent
-- A fal API key for Director or Cinematic Clips mode
+- a language-model API key
+- a TMDB API Read Access Token for catalog grounding
+- a fal API key for Cinematic Clips or Director mode
 
-Mock mode can be used to test the UI and conversation without starting a paid Director session, but it still calls Mistral when a user sends a conversational message.
+Mock mode can be used for UI and conversation testing without paid fal generation.
+It still uses the language model and may query TMDB.
 
 ## Installation
 
-Install the frontend dependencies:
-
 ```bash
 npm install
-```
-
-Create or activate the Python virtual environment:
-
-```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-The repository already includes a `.venv` in the expected location in the development environment, but recreating it is safe if necessary.
-
-## Environment configuration
-
-Copy the example file and fill in the real keys locally:
-
-```bash
 cp .env.example .env
 ```
 
-Set these values in `.env`:
+Set the local environment values in `.env`:
 
 ```env
-MISTRAL_API_KEY=your_mistral_api_key
+MISTRAL_API_KEY=your_language_model_api_key
 MISTRAL_MODEL=mistral-small-latest
 TMDB_API_KEY=your_tmdb_read_access_token
 FAL_API_KEY=your_fal_api_key
 NEXT_PUBLIC_AGENT_API_URL=http://localhost:8000
+TMDB_WATCH_PROVIDER_COUNTRY=ES
 ```
 
-Details:
+The backend currently reads `MISTRAL_API_KEY` and `MISTRAL_MODEL` for the configured
+language-model provider. Those names are implementation configuration keys and may
+be replaced if the provider adapter changes.
 
-- `MISTRAL_API_KEY` is read only by FastAPI.
-- `MISTRAL_MODEL` is optional; it defaults to `mistral-small-latest`.
-- `FAL_API_KEY` is read by the server-side fal proxy. The current project variable is `FAL_API_KEY`; the proxy also accepts `FAL_KEY` as a fallback.
-- `NEXT_PUBLIC_AGENT_API_URL` is safe to expose to the browser and defaults to `http://localhost:8000`.
-- `TMDB_API_KEY` is read only by FastAPI and should contain the TMDB API Read Access Token used as a Bearer token. `TMDB_READ_ACCESS_TOKEN` is also accepted as an alternative variable name.
+`TMDB_READ_ACCESS_TOKEN` is also accepted as an alternative to `TMDB_API_KEY`.
+`FAL_KEY` is accepted as a fallback for `FAL_API_KEY` by the fal proxy.
 
-Never commit `.env`, `.env.local`, or any file containing real keys. They are ignored by Git.
+Never commit `.env`, `.env.local`, or real credentials.
 
 ## Running locally
 
-### Recommended: two terminals
+### Two terminals
 
-Start the FastAPI agent in terminal 1:
+Start the backend:
 
 ```bash
 npm run agent
 ```
 
-This runs:
-
-```bash
-.venv/bin/uvicorn backend.main:app --reload --port 8000
-```
-
-Start Next.js in terminal 2:
+Start the frontend in another terminal:
 
 ```bash
 npm run dev
@@ -119,199 +193,83 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-Verify that FastAPI is running with:
+Check the backend:
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-Expected response shape:
-
-```json
-{
-  "status": "ok",
-  "mistral_configured": "true",
-  "tmdb_configured": "true",
-  "model": "mistral-small-latest"
-}
-```
-
 ### Combined command
-
-If no other Next.js server is already using port 3000, both services can be started with:
 
 ```bash
 npm run dev:all
 ```
 
-If port 3000 is already occupied, use the two-terminal workflow instead. The combined command stops all child processes when either service exits.
+This starts Next.js and FastAPI together. Press `Ctrl+C` to stop both services.
+If either service was previously started separately, stop it first so ports 3000 and
+8000 are available.
 
-## Using the application
+## Demo data and persistence
 
-### Mock mode
+The application uses local JSON persistence for prototype data:
 
-Mock mode is selected by default. It plays:
+- `data/users/<profile-id>.json` — each profile’s My Picks;
+- `data/profile-settings/<profile-id>.json` — profile privacy settings;
+- `data/around-poltv.json` — recent social recommendation activity.
 
-`public/resources/Polintro.mp4` is used for the opening intro. Mock visual actions use
-`public/resources/polconcassette5s.mp4`. While a finite T2V/I2V generation is being
-processed, the UI loops `public/resources/polchoosing5s.mp4` as a waiting scene and
-replaces it with the generated result when ready.
+Seed realistic saved movies for every configured profile:
 
-To test the conversation without paying for Director:
+```bash
+npm run seed:lists
+```
 
-1. Select **Mock** in the **Video mode** selector.
-2. Click **Start** if you want the mock video playing.
-3. The opening assistant message appears immediately:
+The seed command resolves real movie metadata through TMDB, assigns a profile-specific
+movie pool, and also prepares a small Around PolTV demo feed. It is idempotent for
+the saved-list contents and does not run automatically at startup.
 
-   ```text
-   What do you feel like watching?
-   ```
+Clear only My Picks while preserving profiles and social activity:
 
-4. Send a natural-language request.
-5. FastAPI sends the conversation to Mistral.
-6. The assistant reply appears in the conversation.
-7. If the Media Orchestrator returns `action=update`, the visual intent is shown in the developer settings and Mock mode logs it without calling fal.
+```bash
+npm run clear:lists
+```
 
-The mock MP4 is fixed, so it does not visually react to generated instructions.
+The clear command does not remove Around PolTV activity, profile settings, avatars,
+or other application data.
 
-Mock mode still uses Mistral and can use TMDB recommendations, but it never calls fal. This is the recommended mode for testing the conversational and catalog flows without video-generation cost.
-
-### Cinematic Clips mode
-
-Cinematic Clips supports manually selected Text-to-Video and Image-to-Video generation through the existing `/api/fal/proxy` server proxy. It does not open a Director session and does not require continuity between clips.
-
-1. Select **Cinematic Clips**.
-2. Click **Start** if you want the prerecorded Pol intro playing while the conversation begins.
-3. Continue the Mistral conversation normally.
-4. When the Media Orchestrator returns `action=update`, the browser submits its backend-neutral `visual_instruction` using the selected method's settings in `config/video.ts`.
-5. While fal processes the request, the UI shows queued/generating status. The completed CDN video replaces the intro or previous clip in the main player.
-
-The conversation remains usable while a clip is generating. A second clip request is ignored until the current one completes.
-
-Every executed Text-to-Video update includes Pol as a meaningful character, normally
-the protagonist. If Pol would not add value, the Media Orchestrator should return
-`none` instead of producing a generic Pol-less T2V scene.
-
-For **Text-to-Video**, the current development settings are five seconds, 480P, 16:9, and prompt expansion disabled. For **Image-to-Video**, select the method and the currently selected viewer profile supplies the existing image reference. No upload control is used. The current settings are five seconds, 768P, and prompt expansion disabled. The selected profile image is loaded from `public/resources/users` and passed through the existing fal client image-input path; it is not persisted by the application. The viewer remains the primary I2V subject, while Pol may appear as a textual companion/supporting character.
-
-See the official [H3 Max Image-to-Video API documentation](https://fal.ai/models/minimax/h3-max/image-to-video/api) for the current request and file-handling contract.
-
-### Live Director mode
-
-To use the real stream:
-
-1. Select **Director** before starting.
-2. Click **Start**.
-3. Wait for the Director status to become `Live`.
-4. Use the conversational input to describe what you want to watch.
-5. When the Media Orchestrator returns `action=update`, the browser sends the visual instruction to the existing Director session.
-6. Use **Stop Session** to close the WebRTC session and release its resources.
-
-For development cost control, the current test session automatically stops after 60 seconds. Director sessions have fal-specific pricing and minimum charges; check the [current fal Director page](https://fal.ai/h3-max-director) before running live tests.
-
-### Developer raw steering
-
-The existing raw Director steering control remains available under **Developer: raw Director steering**. It is useful for separating Director problems from Mistral-generated instruction problems.
-
-Raw steering uses the same active Director session and does not create a second stream.
-
-## Conversational agent API
-
-FastAPI exposes:
+## Backend endpoints
 
 ```text
 GET  /health
 POST /chat
 POST /media-orchestrate
+GET  /around-poltv?exclude_profile_id=<id>
+GET  /catalog-item?media_type=movie|tv&tmdb_id=<id>
 ```
 
-Request body for `/chat`:
+The frontend also uses Next.js routes for local My Picks, profile settings, the fal
+proxy, and generated-video saving.
 
-```json
-{
-  "session_id": "browser-session-id",
-  "message": "Something exciting."
-}
-```
+## Configuration and prompts
 
-Response body:
+Video settings are centralized in `config/video.ts`, including:
 
-```json
-{
-  "session_id": "browser-session-id",
-  "reply": "Action, thriller, adventure... or something else?",
-  "suggestions": ["Something funny", "A darker mystery"],
-  "needs_catalog": false,
-  "catalog_retrieved": false,
-  "catalog_candidates": [],
-  "conversation_revision": 1
-}
-```
+- Text-to-Video endpoint, duration, resolution, aspect ratio, and prompt expansion;
+- Image-to-Video endpoint, duration, resolution, and prompt expansion;
+- Director development-session duration.
 
-The browser then calls `/media-orchestrate` independently with the relevant
-conversation, catalog, media, backend, reference-image, and revision state. Its
-response is:
+Prompt resources are kept separate from application logic:
 
-```json
-{
-  "session_id": "browser-session-id",
-  "action": "update",
-  "visual_instruction": "An original lighthearted action adventure in a colorful coastal town...",
-  "reason": "The preferences have become specific enough for a visual mood update.",
-  "conversation_revision": 3,
-  "media_action_id": "..."
-}
-```
+- `prompt/system.py` — recommendation-agent behavior;
+- `prompt/catalog.py` — catalog grounding and recommendation context;
+- `prompt/media_orchestrator.py` — visual-update decisions and resolved cinematic intent;
+- `prompt/media.ts` — backend-specific media prompt construction;
+- `prompt/initial.ts` and `prompt/assistant.ts` — opening visual and conversation copy.
 
-Both responses are validated with Pydantic models. Recommendation replies are not
-blocked by orchestration or fal generation. Conversation revisions and media action
-IDs prevent stale results from replacing newer media state. Conversation history is
-stored in memory only and is lost when FastAPI restarts.
+The canonical Pol identity is stored in `config/pol.json`.
 
-## TMDB catalog grounding
+## Validation
 
-FastAPI uses the TMDB v3 API with a server-side Bearer token. The retrieval layer currently supports movie and TV title search, movie and TV discovery with simple genre/year filters, genre lists for translating structured genre names to TMDB IDs, and similar-title results when a referenced title is resolved.
-
-Mistral first decides whether `needs_catalog` is true and returns a compact `catalog_query`. FastAPI retrieves at most a small normalized candidate set, then sends those candidates to a second Mistral call for the final conversational response. The model is instructed not to invent catalog titles or metadata. Recent candidates are held in memory for the active `session_id`, so follow-ups such as “the second one” can be resolved.
-
-The developer section **TMDB retrieval** exposes the normalized query, retrieval status, errors, and compact candidates without displaying raw TMDB responses. Candidates also include backend-normalized `poster_url` and `backdrop_url` values based on TMDB image configuration.
-
-When retrieval returns candidates, the frontend displays the same candidates as a small horizontal row of selectable cards. Clicking a card sends its TMDB ID, media type, and title to FastAPI alongside a natural-language message, so Mistral receives an unambiguous selection context. The cards do not start video generation and do not use TMDB posters as Image-to-Video inputs.
-
-TMDB poster URLs follow the official [TMDB image URL guidance](https://developer.themoviedb.org/docs/image-basics), using a normal `w500` poster size when available.
-
-## Director steering protocol
-
-The initial Director configuration uses `prompt_version: 1`. Subsequent directions use increasing versions:
-
-```json
-{
-  "type": "prompt",
-  "prompt": "...",
-  "script_mode": "replace",
-  "replan": true,
-  "prompt_version": 2
-}
-```
-
-`replan: true` asks Director to replace pending planned directions at the next undispatched chunk. The frontend logs fal's `prompt_applied` event as the acknowledgement that the direction was accepted for upcoming generation. Acceptance does not mean that the visual change is already visible; buffered content and generation timing still apply.
-
-## Prompt locations
-
-Model prompts are kept outside the application logic:
-
-- `prompt/initial.ts` — initial Director scene.
-- `prompt/assistant.ts` — deterministic opening assistant message.
-- `prompt/system.py` — Mistral system prompt and backend assistant-message resource.
-- `prompt/media_orchestrator.py` — conservative visual-update decision prompt.
-
-## Video configuration
-
-Video-generation settings are centralized in `config/video.ts`. This includes the Cinematic Clips endpoint, duration, resolution, aspect ratio, prompt expansion mode, and the temporary Director test-session duration. Change these values there when experimenting with generation behavior or cost.
-
-## Validation commands
-
-Frontend:
+Frontend checks:
 
 ```bash
 npm run lint
@@ -319,64 +277,32 @@ npx tsc --noEmit
 npm run build
 ```
 
-Backend:
+Backend checks:
 
 ```bash
-PYTHONPYCACHEPREFIX=/private/tmp/bnahack26-pycache .venv/bin/python -m compileall -q backend prompt
+PYTHONPYCACHEPREFIX=/tmp/poltv-pycache .venv/bin/python -m compileall -q backend prompt
 ```
 
-The Mistral conversation can be tested without fal by using Mock mode. A useful manual sequence is:
+For a no-cost visual test, use Mock mode. Confirm that recommendation cards, the
+metadata popup, My Picks, Around PolTV, profile switching, voice transcription, and
+the opening media all remain usable before testing paid generation modes.
 
-```text
-Something exciting.
-Action, but something fun rather than serious.
-Now make it more mysterious while keeping the same world.
-```
+## Security and cost notes
 
-The Recommendation Agent should be capable of asking for clarification first. The separate Media Orchestrator conservatively decides whether a visual update is useful; exact timing is intentionally model-dependent.
-
-## Troubleshooting
-
-### `Agent backend unavailable` or `Failed to fetch`
-
-FastAPI is not reachable. Start it in a second terminal:
-
-```bash
-npm run agent
-```
-
-Then check:
-
-```bash
-curl http://localhost:8000/health
-```
-
-If `mistral_configured` is `false`, check `MISTRAL_API_KEY` in `.env` and restart FastAPI.
-
-### Agent returns a Mistral error
-
-Check the FastAPI terminal for the upstream error. Common causes include an invalid key, unavailable model, rate limiting, or account restrictions. Confirm the configured model with `/health` or set `MISTRAL_MODEL` in `.env`.
-
-### Director does not start
-
-Confirm that:
-
-- Mock mode is disabled.
-- `FAL_API_KEY` is set in `.env`.
-- The Next.js server was restarted after changing environment variables.
-- The browser log shows a Director connection/configuration error.
-
-### Agent replies but video does not change
-
-Confirm that the page says `Mode: LIVE DIRECTOR`, not `Mode: MOCK`. In Mock mode, generated instructions are intentionally only displayed/logged. In live mode, wait for the fal `prompt_applied` acknowledgement and for the next undispatched video chunk to reach playback.
-
-## Security notes
-
-- Keep Mistral and fal keys server-side.
+- Keep all API keys server-side.
 - Do not use `NEXT_PUBLIC_` for secrets.
-- The local fal proxy is intentionally minimal and unauthenticated for development. Protect it with application authentication before deploying it, because requests can incur fal charges.
-- Do not commit `.env`, `.env.local`, or generated secret files.
+- Mock mode never calls paid fal generation.
+- The local fal proxy is intended for development and is unauthenticated; protect it
+  before deployment because requests can incur provider charges.
+- Do not automatically generate video for every conversational turn.
+- Do not commit persisted private data or real credentials.
 
 ## Current scope
 
-The current implementation intentionally stops at conversational Mistral decisions, TMDB-grounded catalog retrieval/cards, and manually selected Mock, Cinematic Clips, and Director visual modes. Voice, user profiles, persistence, automatic mode routing, and later roadmap steps require separate explicit work.
+PolTV currently provides conversational catalog discovery, profile-specific My Picks,
+Around PolTV social discovery, browser voice-to-text, TMDB-backed visual cards, and
+manually selected Mock, Cinematic Clips, and Director visual experiences.
+
+Automatic visual-mode routing, full TV remote navigation, streaming-provider
+availability, trailers, voice output, user accounts, watchlists, and advanced identity
+consistency remain outside the current prototype scope.

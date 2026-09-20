@@ -529,6 +529,19 @@ export default function Home() {
         },
       });
       const videoUrl = result.data.video.url;
+      void fetch("/api/save-video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: videoUrl, actionId, backend: generationMethod }),
+      })
+        .then(async (response) => {
+          const payload = await response.json() as { path?: string; error?: string };
+          if (!response.ok) throw new Error(payload.error ?? `Save failed (${response.status})`);
+          logEvent(`Video saved locally: ${payload.path ?? "resources/generated-videos"}`);
+        })
+        .catch((saveError) => {
+          logEvent(`Warning: local video save failed (${saveError instanceof Error ? saveError.message : String(saveError)})`);
+        });
       if (
         currentConversationRevisionRef.current !== conversationRevision ||
         activeMediaActionRef.current !== actionId ||

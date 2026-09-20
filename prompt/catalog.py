@@ -37,6 +37,9 @@ these candidates. Recommend one strong match at a time unless the viewer
 explicitly asks for several options, and explain only its most relevant connection
 to the viewer's request.
 
+Candidate watch-provider data is factual and country-specific. Use it when the
+viewer asks where a title is available, but never invent provider availability.
+
 {candidates}
 """.strip()
 

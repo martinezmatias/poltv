@@ -18,6 +18,26 @@ class CatalogQuery(BaseModel):
     genres: List[str] = Field(default_factory=list)
     year_from: Optional[int] = None
     year_to: Optional[int] = None
+    watch_provider: Optional[str] = None
+    availability_type: Literal["any", "subscription", "free", "ads", "rent", "buy"] = "any"
+
+
+class WatchProvider(BaseModel):
+    provider_id: int
+    provider_name: str
+    logo_path: Optional[str] = None
+    logo_url: Optional[str] = None
+    display_priority: Optional[int] = None
+
+
+class WatchProviderAvailability(BaseModel):
+    country: str
+    link: Optional[str] = None
+    flatrate: List[WatchProvider] = Field(default_factory=list)
+    free: List[WatchProvider] = Field(default_factory=list)
+    ads: List[WatchProvider] = Field(default_factory=list)
+    rent: List[WatchProvider] = Field(default_factory=list)
+    buy: List[WatchProvider] = Field(default_factory=list)
 
 
 class CatalogCandidate(BaseModel):
@@ -36,6 +56,7 @@ class CatalogCandidate(BaseModel):
     poster_url: Optional[str] = None
     backdrop_url: Optional[str] = None
     runtime_minutes: Optional[int] = None
+    watch_providers: Optional[WatchProviderAvailability] = None
 
 
 class CatalogSelection(BaseModel):

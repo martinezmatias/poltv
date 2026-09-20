@@ -2,6 +2,7 @@
 
 import { createPortal } from "react-dom";
 import type { CatalogCandidate } from "./types";
+import { WatchProviders } from "./WatchProviders";
 
 type RecommendationDetailsModalProps = {
   candidate: CatalogCandidate;
@@ -41,6 +42,7 @@ export function RecommendationDetailsModal({ candidate, polExplanation, saved, o
             <h2 id="recommendation-modal-title">{candidate.title}</h2>
             <p className="recommendation-modal-meta">{metadataLine(candidate)}{candidate.vote_average > 0 ? ` · ★ ${candidate.vote_average.toFixed(1)} TMDB` : ""}{formatRuntime(candidate) ? ` · ${formatRuntime(candidate)}` : ""}</p>
             {candidate.overview ? <p className="recommendation-modal-overview">{candidate.overview}</p> : null}
+            <WatchProviders candidate={candidate} />
           </div>
         </div>
         {polExplanation ? (

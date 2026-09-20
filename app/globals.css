@@ -116,6 +116,21 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .recommendation-card:hover { transform:translateY(-5px); }
 .recommendation-card-select { width:100%; padding:0; border:0; background:transparent; color:inherit; text-align:left; cursor:pointer; }
 .recommendation-card-select:disabled { opacity:.5; cursor:default; }
+.watch-providers { color:var(--muted); }
+.watch-providers-compact { display:flex; align-items:center; gap:6px; margin-top:6px; font-size:.64rem; }
+.watch-providers-label { white-space:nowrap; }
+.watch-provider-logos { display:flex; align-items:center; gap:4px; min-width:0; }
+.watch-provider-logos img { width:22px; height:22px; object-fit:cover; border-radius:4px; background:#292723; }
+.watch-provider-name { color:var(--ink); font-size:.64rem; }
+.watch-providers-detail { display:grid; gap:8px; margin-top:16px; padding-top:12px; border-top:1px solid var(--line); font-size:.78rem; }
+.watch-providers-heading { color:var(--ink); font-weight:600; }
+.watch-provider-group { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.watch-provider-group > span { color:var(--muted); }
+.watch-providers-detail a { color:var(--accent); font-size:.72rem; text-decoration:none; }
+.watch-providers-detail a:hover { text-decoration:underline; }
+.watch-providers-detail small { color:var(--dim); font-size:.65rem; }
+.card-copy .watch-providers { white-space:normal; overflow:visible; }
+.card-copy .watch-provider-logos { display:flex; white-space:normal; overflow:visible; }
 .poster-button { display:block; width:100%; padding:0; border:0; background:transparent; cursor:pointer; }
 .recommendation-card img, .poster-placeholder { display:block; width:150px; height:210px; object-fit:cover; border-radius:5px; background:#252421; }
 .poster-placeholder { display:grid; place-items:center; color:var(--muted); font-size:.7rem; }

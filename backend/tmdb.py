@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from datetime import date
+import os
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import httpx
 
-from backend.main_types import CatalogCandidate, CatalogQuery
+from backend.main_types import CatalogCandidate, CatalogQuery, WatchProvider, WatchProviderAvailability
 
 
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
 REQUEST_TIMEOUT_SECONDS = 15.0
+DEFAULT_WATCH_PROVIDER_COUNTRY = "ES"
 
 
 class TMDBError(RuntimeError):
@@ -21,6 +23,7 @@ class TMDBClient:
         self.access_token = access_token
         self._genre_cache: Dict[str, Dict[str, int]] = {}
         self._details_cache: Dict[Tuple[str, int], Dict[str, Any]] = {}
+        self._watch_provider_cache: Dict[Tuple[str, int, str], Optional[WatchProviderAvailability]] = {}
 
     def _image_configuration(self) -> Tuple[str, List[str], List[str]]:
         try:
@@ -97,6 +100,68 @@ class TMDBClient:
             path = f"/movie/{item_id}" if media_type == "movie" else f"/tv/{item_id}"
             self._details_cache[key] = self._request(path, {"language": "en-US"})
         return self._details_cache[key]
+
+    def _watch_providers(self, media_type: str, item_id: int, country: str) -> Optional[WatchProviderAvailability]:
+        normalized_country = country.upper()
+        key = (media_type, item_id, normalized_country)
+        if key in self._watch_provider_cache:
+            return self._watch_provider_cache[key]
+        path = f"/movie/{item_id}/watch/providers" if media_type == "movie" else f"/tv/{item_id}/watch/providers"
+        payload = self._request(path)
+        results = payload.get("results")
+        country_data = results.get(normalized_country) if isinstance(results, dict) else None
+        if not isinstance(country_data, dict):
+            self._watch_provider_cache[key] = None
+            return None
+
+        base_url = "https://image.tmdb.org/t/p/w92"
+
+        def normalize_group(value: Any) -> List[WatchProvider]:
+            if not isinstance(value, list):
+                return []
+            providers: List[WatchProvider] = []
+            seen: set[int] = set()
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                provider_id = item.get("provider_id")
+                provider_name = item.get("provider_name")
+                if not isinstance(provider_id, int) or not isinstance(provider_name, str) or provider_id in seen:
+                    continue
+                logo_path = item.get("logo_path") if isinstance(item.get("logo_path"), str) else None
+                providers.append(
+                    WatchProvider(
+                        provider_id=provider_id,
+                        provider_name=provider_name,
+                        logo_path=logo_path,
+                        logo_url=f"{base_url}{logo_path}" if logo_path else None,
+                        display_priority=item.get("display_priority") if isinstance(item.get("display_priority"), int) else None,
+                    )
+                )
+                seen.add(provider_id)
+            return sorted(providers, key=lambda provider: provider.display_priority if provider.display_priority is not None else 9999)
+
+        availability = WatchProviderAvailability(
+            country=normalized_country,
+            link=country_data.get("link") if isinstance(country_data.get("link"), str) else None,
+            flatrate=normalize_group(country_data.get("flatrate")),
+            free=normalize_group(country_data.get("free")),
+            ads=normalize_group(country_data.get("ads")),
+            rent=normalize_group(country_data.get("rent")),
+            buy=normalize_group(country_data.get("buy")),
+        )
+        self._watch_provider_cache[key] = availability
+        return availability
+
+    def watch_provider_country(self) -> str:
+        return os.getenv("TMDB_WATCH_PROVIDER_COUNTRY", DEFAULT_WATCH_PROVIDER_COUNTRY).upper()
+
+    def _enrich_watch_providers(self, candidate: CatalogCandidate) -> CatalogCandidate:
+        try:
+            providers = self._watch_providers(candidate.media_type, candidate.tmdb_id, self.watch_provider_country())
+            return candidate.model_copy(update={"watch_providers": providers})
+        except (TMDBError, TypeError, ValueError):
+            return candidate
 
     def _discover(self, media_type: str, query: CatalogQuery) -> List[Dict[str, Any]]:
         params: Dict[str, Any] = {"include_adult": False, "sort_by": "popularity.desc"}
@@ -187,7 +252,9 @@ class TMDBClient:
     def get_candidate(self, media_type: str, item_id: int) -> Optional[CatalogCandidate]:
         details = self._details(media_type, item_id)
         candidate = self._normalize(details, media_type, self._genres(media_type), self._image_configuration())
-        return self._enrich_runtime(candidate) if candidate else None
+        if not candidate:
+            return None
+        return self._enrich_watch_providers(self._enrich_runtime(candidate))
 
     def _normalize_many(
         self,
@@ -233,4 +300,7 @@ class TMDBClient:
             if key not in seen:
                 seen.add(key)
                 unique.append(candidate)
-        return [self._enrich_runtime(candidate) for candidate in unique[:8]]
+        return [
+            self._enrich_watch_providers(self._enrich_runtime(candidate))
+            for candidate in unique[:8]
+        ]

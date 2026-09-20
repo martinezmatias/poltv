@@ -320,6 +320,8 @@ app.add_middleware(
 
 store = ConversationStore()
 activity_store = RecommendationActivityStore()
+_tmdb_client: Optional[TMDBClient] = None
+_tmdb_client_token: Optional[str] = None
 
 
 def get_mistral_client() -> Mistral:
@@ -330,10 +332,14 @@ def get_mistral_client() -> Mistral:
 
 
 def get_tmdb_client() -> TMDBClient:
+    global _tmdb_client, _tmdb_client_token
     access_token = os.getenv("TMDB_API_KEY") or os.getenv("TMDB_READ_ACCESS_TOKEN")
     if not access_token:
         raise HTTPException(status_code=503, detail="TMDB_API_KEY is not configured")
-    return TMDBClient(access_token=access_token)
+    if _tmdb_client is None or _tmdb_client_token != access_token:
+        _tmdb_client = TMDBClient(access_token=access_token)
+        _tmdb_client_token = access_token
+    return _tmdb_client
 
 
 def format_exception(exc: Exception) -> str:
@@ -349,6 +355,27 @@ def preference_summary(preferences: List[str]) -> str:
     fragments = [re.sub(r"\s+", " ", item).strip(" .,!?") for item in preferences[-3:]]
     summary = " · ".join(fragment for fragment in fragments if fragment)
     return summary[:100] or "a great film or series"
+
+
+def filter_by_watch_provider(candidates: List[CatalogCandidate], query: CatalogQuery) -> List[CatalogCandidate]:
+    if not query.watch_provider and query.availability_type == "any":
+        return candidates
+    provider_query = query.watch_provider.casefold().strip() if query.watch_provider else None
+    group_name = "flatrate" if query.availability_type == "subscription" else query.availability_type
+    filtered: List[CatalogCandidate] = []
+    for candidate in candidates:
+        availability = candidate.watch_providers
+        if availability is None:
+            continue
+        providers = getattr(availability, group_name) if group_name != "any" else (
+            availability.flatrate + availability.free + availability.ads + availability.rent + availability.buy
+        )
+        if provider_query and not any(provider_query in provider.provider_name.casefold() for provider in providers):
+            continue
+        if not provider_query and not providers:
+            continue
+        filtered.append(candidate)
+    return filtered
 
 
 def fallback_visual_instruction(
@@ -761,6 +788,7 @@ def chat(request: ChatRequest) -> ChatResponse:
         retrieval_query = decision.catalog_query
         try:
             candidates = get_tmdb_client().retrieve(decision.catalog_query)
+            candidates = filter_by_watch_provider(candidates, decision.catalog_query)
             catalog_retrieved = True
             if not candidates:
                 catalog_error = "TMDB returned no matching titles"

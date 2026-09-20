@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { CatalogCandidate } from "./types";
 import { RecommendationDetailsModal } from "./RecommendationDetailsModal";
+import { WatchProviders } from "./WatchProviders";
 
 type RecommendationRailProps = {
   recommendations: CatalogCandidate[];
@@ -62,6 +63,7 @@ export function RecommendationRail({ recommendations, onSelect, disabled = false
                     {formatRuntime(candidate) ? `${candidate.vote_average > 0 ? " · " : ""}${formatRuntime(candidate)}` : null}
                   </span>
                   {candidate.overview ? <span className="card-overview">{candidate.overview}</span> : null}
+                  <WatchProviders candidate={candidate} compact />
                 </span>
               </button>
               {onToggleSave ? (

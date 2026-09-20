@@ -14,4 +14,23 @@ export type CatalogCandidate = {
   poster_url: string | null;
   backdrop_url: string | null;
   runtime_minutes?: number | null;
+  watch_providers?: WatchProviderAvailability | null;
+};
+
+export type WatchProvider = {
+  provider_id: number;
+  provider_name: string;
+  logo_path: string | null;
+  logo_url: string | null;
+  display_priority: number | null;
+};
+
+export type WatchProviderAvailability = {
+  country: string;
+  link: string | null;
+  flatrate: WatchProvider[];
+  free: WatchProvider[];
+  ads: WatchProvider[];
+  rent: WatchProvider[];
+  buy: WatchProvider[];
 };

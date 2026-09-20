@@ -149,6 +149,7 @@ export default function Home() {
   } | null>(null);
   const [recommendations, setRecommendations] = useState<CatalogCandidate[]>([]);
   const [activityRefreshKey, setActivityRefreshKey] = useState(0);
+  const [aroundStatus, setAroundStatus] = useState("Waiting for recommendation activity.");
   const [savedRecommendationKeys, setSavedRecommendationKeys] = useState<Set<string>>(new Set());
   const [selectedRecommendation, setSelectedRecommendation] = useState<CatalogCandidate | null>(null);
   const [generatedInstruction, setGeneratedInstruction] = useState<string | null>(null);
@@ -976,6 +977,7 @@ export default function Home() {
           <button type="button" className="secondary-button" onClick={sendDirection} disabled={videoMode !== "director" || state !== "Live" || !direction.trim()}>Send raw direction</button>
           {directionFeedback ? <p role="status" className="muted">{directionFeedback}</p> : null}
           {generatedInstruction ? <details><summary>Last video instruction</summary><pre>{generatedInstruction}</pre></details> : null}
+          <p className="muted">Around PolTV: {aroundStatus}</p>
           {catalogDebug ? <details><summary>TMDB retrieval debug</summary><pre>{JSON.stringify({ input: catalogDebug.query, output: { retrieval_candidates: catalogDebug.retrievalCandidates, presented_candidates: catalogDebug.candidates, error: catalogDebug.error } }, null, 2)}</pre></details> : null}
           <details><summary>Experiment log</summary><ul className="experiment-log">{logs.map((entry, index) => <li key={`${entry.timestamp}-${index}`}><code>{entry.timestamp}</code> {entry.message}</li>)}</ul></details>
         </details>
@@ -1065,8 +1067,9 @@ export default function Home() {
             key={selectedProfileId}
             apiUrl={AGENT_API_URL}
             activeProfileId={selectedProfileId}
-            visible={recommendations.length > 0 && state !== "Idle"}
+            visible={recommendations.length > 0}
             refreshKey={activityRefreshKey}
+            onStatus={setAroundStatus}
           />
         </div>
       )}

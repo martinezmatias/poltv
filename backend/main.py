@@ -268,7 +268,20 @@ class RecommendationActivityStore:
     def recent_for_others(self, excluded_profile_id: Optional[str]) -> List[RecommendationActivity]:
         with self._lock:
             events = self._read()
-        return [event for event in reversed(events) if event.user_id != excluded_profile_id]
+        return [
+            event
+            for event in reversed(events)
+            if event.user_id != excluded_profile_id and not self._is_private(event.user_id)
+        ]
+
+    @staticmethod
+    def _is_private(profile_id: str) -> bool:
+        settings_path = Path(__file__).resolve().parents[1] / "data" / "profile-settings" / f"{profile_id}.json"
+        try:
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return False
+        return isinstance(settings, dict) and settings.get("around_poltv_private") is True
 
 
 app = FastAPI(title="BNAHack Conversational Agent")

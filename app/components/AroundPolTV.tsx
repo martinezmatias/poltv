@@ -21,9 +21,10 @@ type AroundPolTVProps = {
   activeProfileId: string;
   visible: boolean;
   refreshKey: number;
+  onStatus?: (status: string) => void;
 };
 
-export function AroundPolTV({ apiUrl, activeProfileId, visible, refreshKey }: AroundPolTVProps) {
+export function AroundPolTV({ apiUrl, activeProfileId, visible, refreshKey, onStatus }: AroundPolTVProps) {
   const [activities, setActivities] = useState<RecommendationActivity[]>([]);
   const [index, setIndex] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -37,11 +38,18 @@ export function AroundPolTV({ apiUrl, activeProfileId, visible, refreshKey }: Ar
       })
       .then((nextActivities) => {
         if (!active) return;
-        setActivities(nextActivities.filter((activity) => activity.user_id !== activeProfileId));
+        const eligibleActivities = nextActivities.filter((activity) => activity.user_id !== activeProfileId);
+        setActivities(eligibleActivities);
         setIndex(0);
+        onStatus?.(eligibleActivities.length > 0
+          ? `Visible: ${eligibleActivities.length} eligible event${eligibleActivities.length === 1 ? "" : "s"}.`
+          : `Hidden: no recommendations from other profiles for ${activeProfileId}.`);
       })
       .catch(() => {
-        if (active) setActivities([]);
+        if (active) {
+          setActivities([]);
+          onStatus?.("Unavailable: the Around PolTV service could not be reached.");
+        }
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -49,7 +57,7 @@ export function AroundPolTV({ apiUrl, activeProfileId, visible, refreshKey }: Ar
     return () => {
       active = false;
     };
-  }, [activeProfileId, apiUrl, refreshKey]);
+  }, [activeProfileId, apiUrl, onStatus, refreshKey]);
 
   useEffect(() => {
     if (!visible || activities.length < 2) return;

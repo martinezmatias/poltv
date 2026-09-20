@@ -141,6 +141,11 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .my-list-section { max-width:1100px; margin:0 auto; }
 .my-list-section h2 { margin:0 0 18px; font-family:"Playfair Display",Georgia,serif; font-size:clamp(1.6rem,3vw,2.5rem); font-weight:500; }
 .my-list-subtitle { color:var(--muted); }
+.privacy-setting { display:flex; align-items:flex-start; gap:10px; margin:0 0 26px; color:var(--muted); font-size:.82rem; }
+.privacy-setting input { width:18px; height:18px; margin:1px 0 0; accent-color:var(--accent); }
+.privacy-setting span { display:grid; gap:3px; }
+.privacy-setting strong { color:var(--ink); font-weight:500; }
+.privacy-setting small { color:var(--dim); }
 .my-list-section .recommendation-rail { position:relative; inset:auto; }
 .profile-empty-state { max-width:420px; color:var(--muted); line-height:1.6; }
 .settings-actions { display:flex; gap:8px; margin-top:18px; }

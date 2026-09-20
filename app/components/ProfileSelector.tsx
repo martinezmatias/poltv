@@ -52,7 +52,6 @@ export function ProfileSelector({ selectedId, onSelect }: ProfileSelectorProps) 
               <img src={profile.image} alt="" />
               <span>
                 <strong>{profile.name}</strong>
-                <small>{profile.role}</small>
               </span>
             </button>
           ))}

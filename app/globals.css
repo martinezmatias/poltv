@@ -16,10 +16,25 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .cinematic-mode .media-stage { min-height:100vh; height:100%; }
 .discovery-mode .media-stage-region { flex:0 0 58%; min-height:0; }
 .discovery-mode .media-stage { min-height:0; height:100%; }
-.discovery-recommendations { flex:1 1 42%; min-height:0; overflow:hidden; background:linear-gradient(180deg,#11110f 0%,#0b0b0a 100%); border-top:1px solid var(--line); }
+.discovery-recommendations { flex:1 1 auto; min-height:0; overflow:hidden; background:linear-gradient(180deg,#11110f 0%,#0b0b0a 100%); border-top:1px solid var(--line); }
 .discovery-recommendations .recommendation-rail { position:relative; inset:auto; height:100%; padding:22px clamp(24px,5vw,82px) 18px; }
 .discovery-mode .media-stage-region { animation:discovery-media-in .42s ease both; }
 .discovery-recommendations { animation:discovery-rail-in .42s ease both; }
+.around-poltv { flex:0 0 78px; display:flex; align-items:center; gap:24px; padding:8px clamp(24px,5vw,82px); background:#0b0b0a; border-top:1px solid var(--line); overflow:hidden; }
+.around-heading { flex:0 0 118px; display:flex; align-items:center; justify-content:space-between; }
+.around-controls { display:flex; gap:4px; }
+.around-controls button { width:24px; height:24px; padding:0; border:1px solid var(--line); border-radius:50%; background:transparent; color:var(--muted); cursor:pointer; }
+.around-controls button:hover, .around-controls button:focus-visible { color:var(--ink); border-color:var(--accent); }
+.around-card { min-width:0; display:flex; align-items:center; gap:10px; animation:appear .35s ease both; }
+.around-avatar, .around-avatar-fallback { width:34px; height:34px; flex:0 0 34px; border-radius:50%; object-fit:cover; }
+.around-avatar-fallback { display:grid; place-items:center; color:var(--accent); background:#28241d; }
+.around-card p { max-width:230px; margin:0; color:var(--muted); font-size:.74rem; line-height:1.3; }
+.around-card p strong, .around-card p span { color:var(--ink); }
+.around-arrow { color:var(--accent); font-size:1.1rem; }
+.around-poster { width:34px; height:50px; flex:0 0 34px; object-fit:cover; border-radius:3px; }
+.around-title { min-width:0; display:grid; gap:3px; }
+.around-title strong { max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.78rem; }
+.around-title small { color:var(--muted); font-size:.65rem; }
 .discovery-mode .stage-caption { bottom:34px; }
 .discovery-mode .stage-caption h1 { font-size:clamp(2rem,3.8vw,4.2rem); }
 .eyebrow, .message-label, .stage-label, .rail-count { color:var(--muted); text-transform:uppercase; letter-spacing:.14em; font-size:.67rem; font-weight:600; }

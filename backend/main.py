@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import json
 import re
+from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 from threading import Lock
 from dataclasses import dataclass, field
@@ -50,6 +52,8 @@ class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=200)
     message: str = Field(min_length=1, max_length=4000)
     selected_catalog: Optional[CatalogSelection] = None
+    profile_id: Optional[str] = None
+    profile_name: Optional[str] = None
 
 
 class ChatResponse(AgentDecision):
@@ -103,6 +107,19 @@ class MediaOrchestratorResponse(MediaDecision):
     session_id: str
     conversation_revision: int
     media_action_id: Optional[str] = None
+
+
+class RecommendationActivity(BaseModel):
+    event_id: str
+    user_id: str
+    user_name: str
+    query_summary: str
+    tmdb_id: int
+    media_type: Literal["movie", "tv"]
+    title: str
+    year: Optional[int] = None
+    poster_url: Optional[str] = None
+    timestamp: str
 
 
 @dataclass
@@ -196,6 +213,64 @@ class ConversationStore:
             session.last_visual_instruction = instruction
 
 
+class RecommendationActivityStore:
+    def __init__(self) -> None:
+        self._path = Path(__file__).resolve().parents[1] / "data" / "around-poltv.json"
+        self._lock = Lock()
+
+    def _read(self) -> List[RecommendationActivity]:
+        try:
+            return [RecommendationActivity.model_validate(item) for item in json.loads(self._path.read_text(encoding="utf-8"))]
+        except FileNotFoundError:
+            return []
+        except (json.JSONDecodeError, ValidationError):
+            return []
+
+    def _write(self, events: List[RecommendationActivity]) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._path.with_suffix(".tmp")
+        temporary.write_text(json.dumps([event.model_dump() for event in events], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(self._path)
+
+    def record(
+        self,
+        profile_id: Optional[str],
+        profile_name: Optional[str],
+        query_summary: str,
+        candidates: List[CatalogCandidate],
+        conversation_revision: int,
+    ) -> None:
+        if not profile_id or not candidates:
+            return
+        with self._lock:
+            events = self._read()
+            timestamp = datetime.now(timezone.utc).isoformat()
+            for candidate in candidates:
+                event_id = f"{profile_id}:{conversation_revision}:{candidate.media_type}:{candidate.tmdb_id}"
+                if any(event.event_id == event_id for event in events):
+                    continue
+                events.append(
+                    RecommendationActivity(
+                        event_id=event_id,
+                        user_id=profile_id,
+                        user_name=profile_name or profile_id,
+                        query_summary=query_summary[:100],
+                        tmdb_id=candidate.tmdb_id,
+                        media_type=candidate.media_type,
+                        title=candidate.title,
+                        year=candidate.year,
+                        poster_url=candidate.poster_url,
+                        timestamp=timestamp,
+                    )
+                )
+            self._write(events[-20:])
+
+    def recent_for_others(self, excluded_profile_id: Optional[str]) -> List[RecommendationActivity]:
+        with self._lock:
+            events = self._read()
+        return [event for event in reversed(events) if event.user_id != excluded_profile_id]
+
+
 app = FastAPI(title="BNAHack Conversational Agent")
 app.add_middleware(
     CORSMiddleware,
@@ -211,6 +286,7 @@ app.add_middleware(
 )
 
 store = ConversationStore()
+activity_store = RecommendationActivityStore()
 
 
 def get_mistral_client() -> Mistral:
@@ -234,6 +310,12 @@ def format_exception(exc: Exception) -> str:
     if detail:
         return str(detail)
     return str(exc) or exc.__class__.__name__
+
+
+def preference_summary(preferences: List[str]) -> str:
+    fragments = [re.sub(r"\s+", " ", item).strip(" .,!?") for item in preferences[-3:]]
+    summary = " · ".join(fragment for fragment in fragments if fragment)
+    return summary[:100] or "a great film or series"
 
 
 def parse_decision(content: object) -> AgentDecision:
@@ -263,6 +345,11 @@ def health() -> dict[str, str]:
         "tmdb_configured": str(bool(os.getenv("TMDB_API_KEY") or os.getenv("TMDB_READ_ACCESS_TOKEN"))).lower(),
         "model": os.getenv("MISTRAL_MODEL", DEFAULT_MODEL),
     }
+
+
+@app.get("/around-poltv", response_model=List[RecommendationActivity])
+def around_poltv(exclude_profile_id: Optional[str] = None) -> List[RecommendationActivity]:
+    return activity_store.recent_for_others(exclude_profile_id)
 
 
 def build_model_messages(
@@ -680,6 +767,14 @@ def chat(request: ChatRequest) -> ChatResponse:
         user_message,
         ConversationMessage(role="assistant", content=decision.reply),
     )
+    current_revision = store.revision(request.session_id)
+    activity_store.record(
+        request.profile_id,
+        request.profile_name,
+        preference_summary(session.preferences),
+        presented_candidates,
+        current_revision,
+    )
     response_data = decision.model_dump()
     if retrieval_query is not None:
         response_data["catalog_query"] = retrieval_query
@@ -690,7 +785,7 @@ def chat(request: ChatRequest) -> ChatResponse:
         catalog_candidates=presented_candidates,
         catalog_retrieval_candidates=candidates,
         catalog_error=catalog_error,
-        conversation_revision=store.revision(request.session_id),
+        conversation_revision=current_revision,
         recommendation_revision=recommendation_revision,
         recommendation_set_updated=recommendation_set_updated,
         first_substantive_recommendation_moment=first_substantive_recommendation_moment,

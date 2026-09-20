@@ -9,6 +9,7 @@ import { INITIAL_ASSISTANT_MESSAGE } from "../prompt/assistant";
 import { INITIAL_PROMPT } from "../prompt/initial";
 import { buildMediaPrompt, normalizePolIntent, type PolRole } from "../prompt/media";
 import { CinematicShell } from "./components/CinematicShell";
+import { AroundPolTV } from "./components/AroundPolTV";
 import { MediaStage } from "./components/MediaStage";
 import { ProfileSelector } from "./components/ProfileSelector";
 import { QuickSuggestions } from "./components/QuickSuggestions";
@@ -147,6 +148,7 @@ export default function Home() {
     error: string | null;
   } | null>(null);
   const [recommendations, setRecommendations] = useState<CatalogCandidate[]>([]);
+  const [activityRefreshKey, setActivityRefreshKey] = useState(0);
   const [savedRecommendationKeys, setSavedRecommendationKeys] = useState<Set<string>>(new Set());
   const [selectedRecommendation, setSelectedRecommendation] = useState<CatalogCandidate | null>(null);
   const [generatedInstruction, setGeneratedInstruction] = useState<string | null>(null);
@@ -840,6 +842,8 @@ export default function Home() {
         body: JSON.stringify({
           session_id: agentSessionIdRef.current,
           message: trimmedMessage,
+          profile_id: selectedProfileId,
+          profile_name: selectedProfile.name,
           selected_catalog: selectedCandidate
             ? {
                 tmdb_id: selectedCandidate.tmdb_id,
@@ -863,6 +867,7 @@ export default function Home() {
       setConversation((current) => [...current, { role: "assistant", content: payload.reply }]);
       setSuggestions(payload.suggestions ?? []);
       if (payload.recommendation_set_updated) {
+        setActivityRefreshKey((current) => current + 1);
         logEvent(`Recommendation set revision ${payload.recommendation_revision ?? "?"} produced${payload.first_substantive_recommendation_moment ? " (first substantive moment)" : ""}`);
       }
       if (payload.recommendation_event?.type === "title_commitment") {
@@ -1052,6 +1057,13 @@ export default function Home() {
               />
             </div>
           ) : null}
+          <AroundPolTV
+            key={selectedProfileId}
+            apiUrl={AGENT_API_URL}
+            activeProfileId={selectedProfileId}
+            visible={recommendations.length > 0 && state !== "Idle"}
+            refreshKey={activityRefreshKey}
+          />
         </div>
       )}
     />

@@ -6,6 +6,8 @@
     "dev": "next dev",
     "agent": ".venv/bin/uvicorn backend.main:app --reload --port 8000",
     "dev:all": "concurrently -k -n frontend,agent \"npm run dev\" \"npm run agent\"",
+    "seed:lists": "node scripts/seed-lists.mjs",
+    "clear:lists": "node scripts/clear-lists.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint ."

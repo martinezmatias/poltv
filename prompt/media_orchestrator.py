@@ -41,6 +41,13 @@ recommendation list is not a title commitment. Do not generate a duplicate when
 the same commitment is already represented by current or pending media; return
 none with an appropriate duplicate/relevant-pending reason.
 
+When application state contains generation_policy == aggressive, the application
+has already decided that this completed conversational turn must produce one media
+action. Do not return none in that mode. Still construct the best backend-neutral
+visual_instruction from the latest conversation, preferences, candidates, and
+previous visual context. The application marks the resulting action as
+aggressive_generation and enforces one action per conversation revision.
+
 Pol is the recurring host and may appear when it strengthens the visualization,
 but Pol support must never increase generation frequency. For Image-to-Video, the
 selected profile image is the grounded viewer protagonist and Pol should normally

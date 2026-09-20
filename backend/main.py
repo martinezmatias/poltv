@@ -78,6 +78,7 @@ class MediaOrchestratorState(BaseModel):
     recommendation_set_updated: bool = False
     first_substantive_recommendation_moment: bool = False
     selected_backend: Literal["mock", "clips", "director"] = "mock"
+    generation_policy: Literal["normal", "aggressive"] = "normal"
     conversation_revision: int = 0
     last_media_revision: Optional[int] = None
 
@@ -494,6 +495,20 @@ def media_orchestrate(request: MediaOrchestratorRequest) -> MediaOrchestratorRes
             conversation_revision=current_revision,
         )
     if (
+        state.generation_policy == "aggressive"
+        and state.generation_status == "generating"
+        and state.last_media_revision == state.conversation_revision
+    ):
+        return MediaOrchestratorResponse(
+            session_id=request.session_id,
+            action="none",
+            visual_instruction=None,
+            reason="This conversational turn already has an aggressive media action.",
+            conversation_revision=state.conversation_revision,
+        )
+    if (
+        state.generation_policy == "normal"
+        and
         same_title_commitment(state.recommendation_event, state.last_media_event)
         and (
             state.generation_status in {"generating", "streaming"}
@@ -529,6 +544,25 @@ def media_orchestrate(request: MediaOrchestratorRequest) -> MediaOrchestratorRes
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Media Orchestrator failed: {format_exception(exc)}") from exc
 
+    if state.generation_policy == "aggressive":
+        if not decision.visual_instruction:
+            latest_user_message = next(
+                (message.content for message in reversed(state.recent_messages) if message.role == "user"),
+                "the viewer's latest request",
+            )
+            fallback_instruction = (
+                "An original cinematic visualization of the viewer's latest request: "
+                f"{latest_user_message}. Keep the scene coherent, visually rich, and centered on the current viewing mood."
+            )
+        else:
+            fallback_instruction = decision.visual_instruction
+        decision = decision.model_copy(
+            update={
+                "action": "update",
+                "reason": "aggressive_generation",
+                "visual_instruction": fallback_instruction,
+            }
+        )
     if decision.action == "none":
         decision = decision.model_copy(update={"include_pol": False, "pol_role": "none"})
         return MediaOrchestratorResponse(

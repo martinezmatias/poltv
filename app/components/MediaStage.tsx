@@ -44,9 +44,7 @@ export function MediaStage({
       <video ref={videoRef} className="stage-video" autoPlay playsInline controls={showControls} />
       {showBranding ? (
         <div className="stage-caption">
-          <span className="eyebrow">Pol presents</span>
-          <h1>Find your next world.</h1>
-          <p>Tell us the feeling. We&apos;ll find the story.</p>
+          <h1>Let Pol help you find your film.</h1>
         </div>
       ) : null}
     </div>

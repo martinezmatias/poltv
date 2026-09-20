@@ -13,10 +13,12 @@ import { MediaStage } from "./components/MediaStage";
 import { ProfileSelector } from "./components/ProfileSelector";
 import { QuickSuggestions } from "./components/QuickSuggestions";
 import { RecommendationRail } from "./components/RecommendationRail";
+import { useSpeechRecognition } from "./hooks/useSpeechRecognition";
 import type { CatalogCandidate as ComponentCatalogCandidate } from "./components/types";
 
 type ConnectionState = "Idle" | "Connecting" | "Live" | "Error";
 type VideoMode = "mock" | "clips" | "director";
+type GenerationPolicy = "normal" | "aggressive";
 type ClipMethod = "text-to-video" | "image-to-video";
 type LogEntry = { timestamp: string; message: string };
 type ConversationMessage = { role: "user" | "assistant"; content: string };
@@ -99,6 +101,8 @@ export default function Home() {
   const selectedProfileIdRef = useRef(DEFAULT_VIEWER_PROFILE_ID);
   const displayedFiniteMediaRef = useRef<FiniteMediaState>("intro");
   const previousGeneratedVideoRef = useRef<string | null>(null);
+  const hasDisplayedGeneratedMediaRef = useRef(false);
+  const pendingClipActionsRef = useRef(new Set<string>());
   const activeClipActionRef = useRef<string | null>(null);
   const currentConversationRevisionRef = useRef(0);
   const activeMediaActionRef = useRef<string | null>(null);
@@ -108,6 +112,7 @@ export default function Home() {
   const [sessionActive, setSessionActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [videoMode, setVideoMode] = useState<VideoMode>("mock");
+  const [generationPolicy, setGenerationPolicy] = useState<GenerationPolicy>("normal");
   const [activeVideoMode, setActiveVideoMode] = useState<VideoMode>("mock");
   const [clipMethod, setClipMethod] = useState<ClipMethod>("text-to-video");
   const [selectedProfileId, setSelectedProfileId] = useState(DEFAULT_VIEWER_PROFILE_ID);
@@ -118,6 +123,11 @@ export default function Home() {
     { role: "assistant", content: INITIAL_ASSISTANT_MESSAGE },
   ]);
   const [messageInput, setMessageInput] = useState("");
+  const speechRecognition = useSpeechRecognition({
+    onTranscript: (transcript) => {
+      setMessageInput((current) => current.trim() ? `${current.trim()} ${transcript}` : transcript);
+    },
+  });
   const [suggestions, setSuggestions] = useState([
     "Make me laugh",
     "Something gripping",
@@ -193,10 +203,15 @@ export default function Home() {
     logEvent("Pol VHS transition playing");
   };
 
-  const restorePreviousGeneratedVideo = () => {
+  const restorePreviousGeneratedVideo = (keepAggressiveTransition = false) => {
     if (previousGeneratedVideoRef.current) {
       showFiniteVideo(previousGeneratedVideoRef.current, true, "generated");
       logEvent("Previous generated video restored");
+      return;
+    }
+    if (keepAggressiveTransition) {
+      showTransitionVideo();
+      logEvent("Pol VHS transition remains while generation is retried");
       return;
     }
     showFiniteVideo(INTRO_VIDEO_URL, true, "intro");
@@ -256,6 +271,9 @@ export default function Home() {
     }
     activeClipActionRef.current = null;
     activeMediaActionRef.current = null;
+    hasDisplayedGeneratedMediaRef.current = false;
+    previousGeneratedVideoRef.current = null;
+    pendingClipActionsRef.current.clear();
     setGeneratedInstruction(null);
     setClipStatus(null);
 
@@ -437,11 +455,16 @@ export default function Home() {
     actionId: string,
     conversationRevision: number,
   ) => {
-    if (clipLoading) {
+    if (pendingClipActionsRef.current.has(actionId)) {
+      logEvent(`Cinematic clip action ${actionId} is already in progress`);
+      return;
+    }
+    if (generationPolicy !== "aggressive" && pendingClipActionsRef.current.size > 0) {
       logEvent("Cinematic clip generation already in progress");
       return;
     }
 
+    pendingClipActionsRef.current.add(actionId);
     setClipLoading(true);
     const profileIdAtStart = selectedProfileId;
     setClipError(null);
@@ -452,7 +475,11 @@ export default function Home() {
     if (displayedFiniteMediaRef.current === "generated" && video?.src) {
       previousGeneratedVideoRef.current = video.src;
     }
-    showTransitionVideo();
+    if (generationPolicy !== "aggressive" || !hasDisplayedGeneratedMediaRef.current) {
+      showTransitionVideo();
+    } else {
+      logEvent("Current generated video remains visible during aggressive replacement");
+    }
 
     try {
       const generationMethod = clipMethod;
@@ -465,7 +492,7 @@ export default function Home() {
         const message = "The selected profile has no reference image for Image-to-Video.";
         setClipError(message);
         setClipStatus(null);
-        restorePreviousGeneratedVideo();
+        restorePreviousGeneratedVideo(generationPolicy === "aggressive" && !hasDisplayedGeneratedMediaRef.current);
         logEvent(`Error: ${message}`);
         return;
       }
@@ -519,16 +546,20 @@ export default function Home() {
       if (video) {
         activeClipActionRef.current = actionId;
         previousGeneratedVideoRef.current = videoUrl;
+        hasDisplayedGeneratedMediaRef.current = true;
         showFiniteVideo(videoUrl, true, "generated");
       }
     } catch (nextError) {
       const message = nextError instanceof Error ? nextError.message : String(nextError);
       setClipError(message);
       setClipStatus(null);
-      if (activeMediaActionRef.current === actionId) restorePreviousGeneratedVideo();
+      if (activeMediaActionRef.current === actionId) {
+        restorePreviousGeneratedVideo(generationPolicy === "aggressive" && !hasDisplayedGeneratedMediaRef.current);
+      }
       logEvent(`Error: cinematic clip generation failed (${message})`);
     } finally {
-      setClipLoading(false);
+      pendingClipActionsRef.current.delete(actionId);
+      setClipLoading(pendingClipActionsRef.current.size > 0);
     }
   };
 
@@ -546,6 +577,9 @@ export default function Home() {
     if (videoMode === "mock") {
       logEvent(`${source} produced video instruction (mock only)`);
       setGeneratedInstruction(trimmedInstruction);
+      if (generationPolicy === "aggressive" && !hasDisplayedGeneratedMediaRef.current) {
+        showTransitionVideo();
+      }
       const video = videoRef.current;
       if (video) {
         video.pause();
@@ -560,6 +594,7 @@ export default function Home() {
         video.onloadeddata = playMock;
         displayedFiniteMediaRef.current = "generated";
         previousGeneratedVideoRef.current = MOCK_VIDEO_URL;
+        hasDisplayedGeneratedMediaRef.current = true;
         void playMock().then(
           () => {
             setSessionActive(true);
@@ -667,6 +702,7 @@ export default function Home() {
             recommendation_set_updated: recommendationSetUpdated,
             first_substantive_recommendation_moment: firstSubstantiveRecommendationMoment,
             selected_backend: videoMode,
+            generation_policy: generationPolicy,
             conversation_revision: conversationRevision,
             last_media_revision: lastMediaRevisionRef.current,
           },
@@ -694,6 +730,7 @@ export default function Home() {
       const polIntent = normalizePolIntent(backend, payload.include_pol, payload.pol_role);
       const finalPrompt = buildMediaPrompt(payload.visual_instruction, polIntent.includePol, polIntent.polRole, backend);
       setGeneratedInstruction(finalPrompt);
+      logEvent(`Media action source: ${generationPolicy === "aggressive" ? "aggressive_policy" : "media_orchestrator"}`);
       logEvent(`Media Orchestrator: update (${payload.media_action_id})`);
       logEvent(`Media intent: include_pol=${polIntent.includePol}, pol_role=${polIntent.polRole}, profile=${selectedProfile.id}, image_available=${Boolean(selectedProfile.image)}`);
       sendVideoInstruction(
@@ -824,6 +861,17 @@ export default function Home() {
             <option value="director">Director</option>
           </select>
         </label>
+        <label className="settings-toggle">
+          <span>
+            Aggressive generation
+            <small>Generate after every conversation turn. Uses more generation credits.</small>
+          </span>
+          <input
+            type="checkbox"
+            checked={generationPolicy === "aggressive"}
+            onChange={(event) => setGenerationPolicy(event.target.checked ? "aggressive" : "normal")}
+          />
+        </label>
         {videoMode !== "director" ? (
           <>
             <label>Clip method
@@ -848,7 +896,7 @@ export default function Home() {
         </div>
         <details className="developer-details">
           <summary>Developer tools</summary>
-          <p className="muted">Status: {state} · Mode: {videoMode}</p>
+          <p className="muted">Status: {state} · Mode: {videoMode} · Policy: {generationPolicy}</p>
           <textarea value={direction} onChange={(event) => setDirection(event.target.value)} placeholder="Raw Director direction" rows={3} disabled={videoMode !== "director" || state !== "Live"} />
           <button type="button" className="secondary-button" onClick={sendDirection} disabled={videoMode !== "director" || state !== "Live" || !direction.trim()}>Send raw direction</button>
           {directionFeedback ? <p role="status" className="muted">{directionFeedback}</p> : null}
@@ -886,8 +934,23 @@ export default function Home() {
                   if (messageInput.trim()) void sendMessage();
                 }
               }} />
+              {speechRecognition.isSupported ? (
+                <button
+                  type="button"
+                  className={`voice-button${speechRecognition.isListening ? " listening" : ""}`}
+                  aria-label={speechRecognition.isListening ? "Stop voice input" : "Start voice input"}
+                  title={speechRecognition.isListening ? "Stop listening" : "Use voice input"}
+                  onClick={() => speechRecognition.isListening ? speechRecognition.stop() : speechRecognition.start()}
+                  disabled={agentLoading}
+                >
+                  {speechRecognition.isListening ? "■" : "🎙"}
+                </button>
+              ) : null}
               <button type="button" className="send-button" aria-label="Send message" onClick={() => void sendMessage()} disabled={agentLoading || !messageInput.trim()}>↑</button>
             </div>
+            {speechRecognition.isListening ? <p className="voice-status" role="status">Listening…</p> : null}
+            {speechRecognition.status === "completed" ? <p className="voice-status" role="status">Voice text added. Review it before sending.</p> : null}
+            {speechRecognition.error ? <p className="error-note" role="alert">{speechRecognition.error}</p> : null}
             {clipStatus ? <p className="status-note">{clipStatus}</p> : null}
             {clipError ? <p role="alert" className="error-note">Clip error: {clipError}</p> : null}
             {agentError ? <p role="alert" className="error-note">Agent error: {agentError}</p> : null}
@@ -902,7 +965,7 @@ export default function Home() {
               videoRef={videoRef}
               recommendations={recommendations}
               selectedRecommendation={selectedRecommendation}
-              stageLabel={state === "Live" ? "Live experience" : videoMode === "director" ? "Director ready" : "Pol's theatre"}
+              stageLabel={videoMode === "director" ? "Director ready" : "Pol's Favorites"}
               showControls={Boolean(error || clipError)}
               showBranding={!generatedInstruction && !(videoMode === "director" && sessionActive)}
               settings={settingsPanel}

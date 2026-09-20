@@ -1,4 +1,4 @@
-INITIAL_ASSISTANT_MESSAGE = "What are we watching tonight?"
+INITIAL_ASSISTANT_MESSAGE = "What are you in the mood for?"
 
 SYSTEM_PROMPT = """
 You are the conversational viewing assistant for a live generative TV prototype.

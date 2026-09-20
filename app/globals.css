@@ -59,6 +59,12 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .chat-input-wrap textarea::placeholder { color:var(--dim); }
 .send-button { width:34px; height:34px; border:0; border-radius:50%; background:var(--accent); color:#201b15; cursor:pointer; font-size:1.2rem; }
 .send-button:disabled { opacity:.3; cursor:default; }
+.voice-button { width:34px; height:34px; border:1px solid var(--line); border-radius:50%; background:transparent; color:var(--ink); cursor:pointer; font-size:1rem; line-height:1; }
+.voice-button:hover, .voice-button:focus-visible { border-color:var(--accent); color:var(--accent); }
+.voice-button.listening { border-color:var(--accent); color:var(--accent); animation:voice-pulse 1.2s ease-in-out infinite; }
+.voice-button:disabled { opacity:.3; cursor:default; animation:none; }
+.voice-status { margin:6px 0 0; color:var(--accent); font-size:.78rem; }
+@keyframes voice-pulse { 50% { transform:scale(1.08); opacity:.65; } }
 .error-note { color:var(--danger); font-size:.78rem; line-height:1.4; }
 .media-stage { position:relative; min-height:100vh; overflow:hidden; background:#10100f; isolation:isolate; }
 .stage-backdrop, .stage-wash { position:absolute; inset:0; width:100%; height:100%; }
@@ -96,6 +102,10 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .settings-panel { right:0; top:42px; width:min(300px,calc(100vw - 48px)); }
 .settings-popover[open] .settings-panel { position:fixed; top:68px; right:24px; z-index:20; }
 .settings-panel > label, .reference-control { display:grid; gap:6px; color:var(--muted); font-size:.75rem; margin-top:14px; }
+.settings-panel > label.settings-toggle { display:flex; align-items:center; justify-content:space-between; gap:14px; }
+.settings-toggle span { display:grid; gap:3px; }
+.settings-toggle small { color:var(--dim); line-height:1.35; }
+.settings-panel input[type="checkbox"] { width:18px; height:18px; flex:0 0 auto; accent-color:var(--accent); }
 .settings-panel select, .settings-panel input, .settings-panel textarea { width:100%; color:var(--ink); background:#11110f; border:1px solid var(--line); border-radius:7px; padding:8px; }
 .profile-reference-preview { width:56px; height:56px; object-fit:cover; border-radius:8px; border:1px solid var(--line); }
 .settings-actions { display:flex; gap:8px; margin-top:18px; }

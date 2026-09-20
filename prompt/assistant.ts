@@ -1,1 +1,1 @@
-export const INITIAL_ASSISTANT_MESSAGE = "What are we watching?";
+export const INITIAL_ASSISTANT_MESSAGE = "What are you in the mood for?";

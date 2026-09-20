@@ -1,4 +1,4 @@
-import { discoverProfiles, PROFILE_MOVIES, randomMovieCount, randomSample, resolveMovie, writeList } from "./my-list-demo.mjs";
+import { discoverProfiles, PROFILE_MOVIES, randomMovieCount, randomSample, resolveMovie, seedAroundActivities, writeList } from "./my-list-demo.mjs";
 
 const profiles = await discoverProfiles();
 console.log("Seeding PolTV My Lists with real TMDB metadata (4–10 movies per profile)...\n");
@@ -27,4 +27,6 @@ for (const { profile, items } of seededLists) {
   console.log(`${profile.name}: ${items.length} movies saved`);
 }
 
+const activityCount = await seedAroundActivities(seededLists);
 console.log(`\nSeeded ${total} real movies across ${profiles.length} profiles.`);
+console.log(`Synchronized ${activityCount} Around PolTV demo activities.`);

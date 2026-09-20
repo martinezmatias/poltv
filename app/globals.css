@@ -39,8 +39,9 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .discovery-mode .stage-caption h1 { font-size:clamp(2rem,3.8vw,4.2rem); }
 .eyebrow, .message-label, .stage-label, .rail-count { color:var(--muted); text-transform:uppercase; letter-spacing:.14em; font-size:.67rem; font-weight:600; }
 .profile-selector { position:relative; align-self:flex-start; }
-.conversation-brand-row { display:flex; align-items:center; gap:12px; min-height:42px; }
-.conversation-brand-logo { width:55px; height:55px; object-fit:contain; border-radius:50%; }
+.conversation-brand-row { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:42px; }
+.conversation-brand-actions { display:flex; align-items:center; gap:12px; }
+.conversation-brand-logo { width:75px; height:75px; object-fit:contain; border-radius:50%; }
 .profile-trigger { display:flex; align-items:center; gap:11px; }
 .profile-avatar-link { display:block; border-radius:50%; }
 .profile-name-trigger { display:flex; align-items:center; gap:11px; border:0; background:transparent; padding:0; cursor:pointer; color:inherit; text-align:left; }
@@ -123,6 +124,7 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .settings-popover summary::-webkit-details-marker { display:none; }
 .settings-panel { right:0; top:42px; width:min(300px,calc(100vw - 48px)); }
 .settings-popover[open] .settings-panel { position:fixed; top:68px; right:24px; z-index:20; }
+.conversation-settings .settings-popover[open] .settings-panel { left:24px; right:auto; }
 .settings-panel > label, .reference-control { display:grid; gap:6px; color:var(--muted); font-size:.75rem; margin-top:14px; }
 .settings-panel > label.settings-toggle { display:flex; align-items:center; justify-content:space-between; gap:14px; }
 .settings-toggle span { display:grid; gap:3px; }

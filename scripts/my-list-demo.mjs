@@ -7,6 +7,7 @@ import process from "node:process";
 const ROOT = process.cwd();
 const PROFILES_FILE = path.join(ROOT, "config", "profiles.ts");
 const USERS_DIR = path.join(ROOT, "data", "users");
+const AROUND_FILE = path.join(ROOT, "data", "around-poltv.json");
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 
 function loadLocalEnv() {
@@ -94,6 +95,45 @@ export async function writeList(profileId, items) {
   const temporary = `${target}.${process.pid}.tmp`;
   await writeFile(temporary, `${JSON.stringify(items, null, 2)}\n`, "utf8");
   await rename(temporary, target);
+}
+
+export async function seedAroundActivities(seededLists) {
+  let existing = [];
+  try {
+    const parsed = JSON.parse(await readFile(AROUND_FILE, "utf8"));
+    existing = Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+
+  const summaries = [
+    "action, crime and high-speed thrills",
+    "a classic with unforgettable characters",
+    "a warm family adventure",
+    "science-fiction and imaginative adventure",
+  ];
+  const seeded = seededLists.map(({ profile, items }, index) => {
+    const item = items[0];
+    return {
+      event_id: `demo:${profile.id}:${item.media_type}:${item.tmdb_id}`,
+      user_id: profile.id,
+      user_name: profile.name,
+      query_summary: summaries[index % summaries.length],
+      tmdb_id: item.tmdb_id,
+      media_type: item.media_type,
+      title: item.title,
+      year: item.year,
+      poster_url: item.poster_url,
+      timestamp: new Date().toISOString(),
+    };
+  });
+  const seededIds = new Set(seeded.map((event) => event.event_id));
+  const withoutOldDemo = existing.filter((event) => !String(event?.event_id ?? "").startsWith("demo:") || seededIds.has(event.event_id));
+  const byTitle = new Map(withoutOldDemo.map((event) => [`${event.user_id}:${event.media_type}:${event.tmdb_id}`, event]));
+  for (const event of seeded) byTitle.set(`${event.user_id}:${event.media_type}:${event.tmdb_id}`, event);
+  await mkdir(path.dirname(AROUND_FILE), { recursive: true });
+  await writeFile(AROUND_FILE, `${JSON.stringify([...byTitle.values()].slice(-20), null, 2)}\n`, "utf8");
+  return seeded.length;
 }
 
 export const PROFILE_MOVIES = [

@@ -991,8 +991,11 @@ export default function Home() {
         <>
           <div className="conversation-brand-row">
             <ProfileSelector selectedId={selectedProfileId} onSelect={selectProfile} />
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img className="conversation-brand-logo" src="/resources/logopolwithcicle.png" alt="PolTV" />
+            <div className="conversation-brand-actions">
+              <div className="conversation-settings">{settingsPanel}</div>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img className="conversation-brand-logo" src="/resources/logopolwithcicle.png?v=2" alt="PolTV" />
+            </div>
           </div>
           <div className="conversation-intro">
             <h1>{INITIAL_ASSISTANT_MESSAGE}</h1>
@@ -1049,7 +1052,7 @@ export default function Home() {
               stageLabel={videoMode === "director" ? "Director ready" : "Pol's Favorites"}
               showControls={Boolean(error || clipError)}
               showBranding={!generatedInstruction && !(videoMode === "director" && sessionActive)}
-              settings={settingsPanel}
+              settings={null}
             />
           </div>
           {recommendations.length > 0 ? (

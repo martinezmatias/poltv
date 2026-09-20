@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 __pycache__/
+*.pyc
 
 # Next.js
 .next/
@@ -10,3 +11,5 @@ out/
 # Node dependencies
 node_modules/
 *.tsbuildinfo
+resources/generated-videos/
+data/users/

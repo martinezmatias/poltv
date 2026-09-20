@@ -278,7 +278,7 @@ The developer section **TMDB retrieval** exposes the normalized query, retrieval
 
 When retrieval returns candidates, the frontend displays the same candidates as a small horizontal row of selectable cards. Clicking a card sends its TMDB ID, media type, and title to FastAPI alongside a natural-language message, so Mistral receives an unambiguous selection context. The cards do not start video generation and do not use TMDB posters as Image-to-Video inputs.
 
-TMDB poster URLs follow the official [TMDB image URL guidance](https://developer.themoviedb.org/docs/image-basics), using a normal `w500` poster size when available. The interface includes the required notice: “This product uses the TMDB API but is not endorsed or certified by TMDB.”
+TMDB poster URLs follow the official [TMDB image URL guidance](https://developer.themoviedb.org/docs/image-basics), using a normal `w500` poster size when available.
 
 ## Director steering protocol
 

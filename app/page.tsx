@@ -76,6 +76,8 @@ const formatApiError = (value: unknown) => {
   }
 };
 
+const recommendationKey = (candidate: Pick<CatalogCandidate, "media_type" | "tmdb_id">) => `${candidate.media_type}-${candidate.tmdb_id}`;
+
 const fal = createFalClient({ proxyUrl: "/api/fal/proxy" });
 const cinematicClipFal = fal as unknown as {
   subscribe: (
@@ -145,6 +147,7 @@ export default function Home() {
     error: string | null;
   } | null>(null);
   const [recommendations, setRecommendations] = useState<CatalogCandidate[]>([]);
+  const [savedRecommendationKeys, setSavedRecommendationKeys] = useState<Set<string>>(new Set());
   const [selectedRecommendation, setSelectedRecommendation] = useState<CatalogCandidate | null>(null);
   const [generatedInstruction, setGeneratedInstruction] = useState<string | null>(null);
   const [clipLoading, setClipLoading] = useState(false);
@@ -158,9 +161,63 @@ export default function Home() {
   }, [conversation, agentLoading]);
 
   const selectedProfile = VIEWER_PROFILES.find((profile) => profile.id === selectedProfileId) ?? VIEWER_PROFILES[0];
+  useEffect(() => {
+    let active = true;
+    void fetch(`/api/my-list?profileId=${encodeURIComponent(selectedProfileId)}`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`My List could not be loaded (${response.status}).`);
+        return response.json() as Promise<{ items?: CatalogCandidate[] }>;
+      })
+      .then((payload) => {
+        if (!active) return;
+        setSavedRecommendationKeys(new Set((payload.items ?? []).map(recommendationKey)));
+      })
+      .catch(() => {
+        if (active) setSavedRecommendationKeys(new Set());
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedProfileId]);
+
   const selectProfile = (profileId: string) => {
     selectedProfileIdRef.current = profileId;
+    setSavedRecommendationKeys(new Set());
     setSelectedProfileId(profileId);
+  };
+
+  const toggleSavedRecommendation = async (candidate: CatalogCandidate) => {
+    const key = recommendationKey(candidate);
+    const profileId = selectedProfileId;
+    const wasSaved = savedRecommendationKeys.has(key);
+    setSavedRecommendationKeys((current) => {
+      const next = new Set(current);
+      if (wasSaved) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+    try {
+      const response = await fetch("/api/my-list", {
+        method: wasSaved ? "DELETE" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(wasSaved
+          ? { profileId, tmdb_id: candidate.tmdb_id, media_type: candidate.media_type }
+          : { profileId, item: candidate }),
+      });
+      const payload = await response.json() as { items?: CatalogCandidate[]; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "My List update failed.");
+      if (selectedProfileIdRef.current === profileId) {
+        setSavedRecommendationKeys(new Set((payload.items ?? []).map(recommendationKey)));
+      }
+    } catch (nextError) {
+      setSavedRecommendationKeys((current) => {
+        const next = new Set(current);
+        if (wasSaved) next.add(key);
+        else next.delete(key);
+        return next;
+      });
+      setError(nextError instanceof Error ? nextError.message : "My List update failed.");
+    }
   };
 
   const logEvent = (message: string) => {
@@ -990,6 +1047,8 @@ export default function Home() {
                 recommendations={recommendations}
                 onSelect={(candidate) => void sendMessage(candidate)}
                 disabled={agentLoading}
+                savedKeys={savedRecommendationKeys}
+                onToggleSave={(candidate) => void toggleSavedRecommendation(candidate)}
               />
             </div>
           ) : null}

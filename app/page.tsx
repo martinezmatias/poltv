@@ -1081,6 +1081,8 @@ export default function Home() {
             activeProfileId={selectedProfileId}
             visible={recommendations.length > 0}
             refreshKey={activityRefreshKey}
+            savedKeys={savedRecommendationKeys}
+            onToggleSave={(candidate) => void toggleSavedRecommendation(candidate)}
             onStatus={setAroundStatus}
           />
         </div>

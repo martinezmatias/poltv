@@ -263,9 +263,27 @@ class RecommendationActivityStore:
                         year=candidate.year,
                         poster_url=candidate.poster_url,
                         timestamp=timestamp,
+                        )
                     )
+            # Keep the feed bounded, but retain the newest event for each profile
+            # so one active profile cannot evict the entire social feed.
+            selected: List[RecommendationActivity] = []
+            seen_profiles: set[str] = set()
+            for event in reversed(events):
+                if event.user_id in seen_profiles:
+                    continue
+                selected.append(event)
+                seen_profiles.add(event.user_id)
+                if len(selected) == 20:
+                    break
+            if len(selected) < 20:
+                selected_ids = {event.event_id for event in selected}
+                selected.extend(
+                    event for event in reversed(events)
+                    if event.event_id not in selected_ids
                 )
-            self._write(events[-20:])
+                selected = selected[:20]
+            self._write(list(reversed(selected)))
 
     def recent_for_others(self, excluded_profile_id: Optional[str]) -> List[RecommendationActivity]:
         with self._lock:
@@ -405,6 +423,17 @@ def health() -> dict[str, str]:
 @app.get("/around-poltv", response_model=List[RecommendationActivity])
 def around_poltv(exclude_profile_id: Optional[str] = None) -> List[RecommendationActivity]:
     return activity_store.recent_for_others(exclude_profile_id)
+
+
+@app.get("/catalog-item", response_model=CatalogCandidate)
+def catalog_item(media_type: Literal["movie", "tv"], tmdb_id: int) -> CatalogCandidate:
+    try:
+        candidate = get_tmdb_client().get_candidate(media_type, tmdb_id)
+    except TMDBError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="TMDB item not found")
+    return candidate
 
 
 def build_model_messages(

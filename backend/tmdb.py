@@ -140,9 +140,16 @@ class TMDBClient:
         if not isinstance(item_id, int) or not isinstance(title, str) or not title.strip():
             return None
 
+        genre_ids = item.get("genre_ids") or []
         genre_names = [
-            name for name, genre_id in genres.items() if genre_id in (item.get("genre_ids") or [])
+            name for name, genre_id in genres.items() if genre_id in genre_ids
         ]
+        if not genre_names and isinstance(item.get("genres"), list):
+            genre_names = [
+                str(genre.get("name")).strip()
+                for genre in item["genres"]
+                if isinstance(genre, dict) and genre.get("name")
+            ]
         release_date = item.get("release_date") or item.get("first_air_date")
         poster_path = item.get("poster_path") if isinstance(item.get("poster_path"), str) else None
         backdrop_path = item.get("backdrop_path") if isinstance(item.get("backdrop_path"), str) else None
@@ -176,6 +183,11 @@ class TMDBClient:
             return candidate.model_copy(update={"runtime_minutes": runtime_minutes})
         except (TMDBError, TypeError, ValueError):
             return candidate
+
+    def get_candidate(self, media_type: str, item_id: int) -> Optional[CatalogCandidate]:
+        details = self._details(media_type, item_id)
+        candidate = self._normalize(details, media_type, self._genres(media_type), self._image_configuration())
+        return self._enrich_runtime(candidate) if candidate else None
 
     def _normalize_many(
         self,

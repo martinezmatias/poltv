@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { VIEWER_PROFILES } from "../../config/profiles";
+import { RecommendationDetailsModal } from "./RecommendationDetailsModal";
+import type { CatalogCandidate } from "./types";
 
 type RecommendationActivity = {
   event_id: string;
@@ -21,13 +23,17 @@ type AroundPolTVProps = {
   activeProfileId: string;
   visible: boolean;
   refreshKey: number;
+  savedKeys: Set<string>;
+  onToggleSave: (candidate: CatalogCandidate) => void;
   onStatus?: (status: string) => void;
 };
 
-export function AroundPolTV({ apiUrl, activeProfileId, visible, refreshKey, onStatus }: AroundPolTVProps) {
+export function AroundPolTV({ apiUrl, activeProfileId, visible, refreshKey, savedKeys, onToggleSave, onStatus }: AroundPolTVProps) {
   const [activities, setActivities] = useState<RecommendationActivity[]>([]);
   const [index, setIndex] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [detailActivity, setDetailActivity] = useState<RecommendationActivity | null>(null);
+  const [detailCandidate, setDetailCandidate] = useState<CatalogCandidate | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -68,13 +74,50 @@ export function AroundPolTV({ apiUrl, activeProfileId, visible, refreshKey, onSt
   if (!visible || loading || activities.length === 0) return null;
   const activity = activities[index % activities.length];
   const profile = VIEWER_PROFILES.find((item) => item.id === activity.user_id);
+  const activityCandidate: CatalogCandidate = {
+    tmdb_id: activity.tmdb_id,
+    media_type: activity.media_type,
+    title: activity.title,
+    year: activity.year,
+    genres: [],
+    overview: "",
+    popularity: 0,
+    vote_average: 0,
+    vote_count: 0,
+    original_language: "",
+    poster_path: null,
+    backdrop_path: null,
+    poster_url: activity.poster_url,
+    backdrop_url: null,
+    runtime_minutes: null,
+  };
+  const openActivity = (selectedActivity: RecommendationActivity) => {
+    const fallbackCandidate: CatalogCandidate = {
+      ...activityCandidate,
+      tmdb_id: selectedActivity.tmdb_id,
+      media_type: selectedActivity.media_type,
+      title: selectedActivity.title,
+      year: selectedActivity.year,
+      poster_url: selectedActivity.poster_url,
+    };
+    setDetailActivity(selectedActivity);
+    setDetailCandidate(fallbackCandidate);
+    void fetch(`${apiUrl}/catalog-item?media_type=${encodeURIComponent(selectedActivity.media_type)}&tmdb_id=${selectedActivity.tmdb_id}`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Catalog details unavailable");
+        return response.json() as Promise<CatalogCandidate>;
+      })
+      .then((candidate) => setDetailCandidate((current) => current?.tmdb_id === selectedActivity.tmdb_id && current.media_type === selectedActivity.media_type ? candidate : current))
+      .catch(() => undefined);
+  };
 
   return (
-    <section className="around-poltv" aria-label="Around PolTV">
+    <>
+      <section className="around-poltv" aria-label="Around PolTV">
       <div className="around-heading">
         <span className="around-heading-label">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img className="around-poltv-icon" src="/resources/aroundPolTV.png" alt="" />
+          <img className="around-poltv-icon" src="/resources/aroundPolTV.png?v=1" alt="" />
           <span className="eyebrow">Around PolTV</span>
         </span>
         {activities.length > 1 ? (
@@ -84,7 +127,20 @@ export function AroundPolTV({ apiUrl, activeProfileId, visible, refreshKey, onSt
           </div>
         ) : null}
       </div>
-      <article className="around-card" key={activity.event_id}>
+      <article
+        className="around-card around-card-clickable"
+        key={activity.event_id}
+        role="button"
+        tabIndex={0}
+        aria-label={`View details for ${activity.title}`}
+        onClick={() => openActivity(activity)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openActivity(activity);
+          }
+        }}
+      >
         {profile ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img className="around-avatar" src={profile.image} alt="" />
@@ -97,6 +153,16 @@ export function AroundPolTV({ apiUrl, activeProfileId, visible, refreshKey, onSt
         ) : <span className="around-poster poster-placeholder">—</span>}
         <div className="around-title"><strong>{activity.title}</strong><small>Pol&apos;s pick{activity.year ? ` · ${activity.year}` : ""}</small></div>
       </article>
-    </section>
+      </section>
+      {detailActivity && detailCandidate ? (
+        <RecommendationDetailsModal
+          candidate={detailCandidate}
+          polExplanation={detailActivity?.query_summary}
+          saved={savedKeys.has(`${detailCandidate.media_type}-${detailCandidate.tmdb_id}`)}
+          onClose={() => { setDetailActivity(null); setDetailCandidate(null); }}
+          onToggleSave={onToggleSave}
+        />
+      ) : null}
+    </>
   );
 }

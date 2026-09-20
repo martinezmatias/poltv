@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { createPortal } from "react-dom";
 import type { CatalogCandidate } from "./types";
+import { RecommendationDetailsModal } from "./RecommendationDetailsModal";
 
 type RecommendationRailProps = {
   recommendations: CatalogCandidate[];
@@ -80,42 +80,14 @@ export function RecommendationRail({ recommendations, onSelect, disabled = false
         </div>
         {polExplanation ? <p className="pol-reason"><strong>Pol&apos;s pick</strong><span>{polExplanation}</span></p> : null}
       </section>
-      {detailCandidate && typeof document !== "undefined" ? createPortal(
-        <div className="recommendation-modal-backdrop" role="presentation" onClick={() => setDetailCandidate(null)}>
-          <section className="recommendation-modal" role="dialog" aria-modal="true" aria-labelledby="recommendation-modal-title" onClick={(event) => event.stopPropagation()}>
-            <button className="recommendation-modal-close" type="button" onClick={() => setDetailCandidate(null)} aria-label="Close details">×</button>
-            <div className="recommendation-modal-content">
-              <div className="recommendation-modal-poster-column">
-                {detailCandidate.poster_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img className="recommendation-modal-poster" src={detailCandidate.poster_url} alt={`${detailCandidate.title} poster`} />
-                ) : null}
-              </div>
-              <div className="recommendation-modal-copy">
-                <span className="eyebrow">{detailCandidate.media_type === "tv" ? "Series" : "Movie"}</span>
-                <h2 id="recommendation-modal-title">{detailCandidate.title}</h2>
-                <p className="recommendation-modal-meta">{metadataLine(detailCandidate)}{detailCandidate.vote_average > 0 ? ` · ★ ${detailCandidate.vote_average.toFixed(1)} TMDB` : ""}{formatRuntime(detailCandidate) ? ` · ${formatRuntime(detailCandidate)}` : ""}</p>
-                {detailCandidate.overview ? <p className="recommendation-modal-overview">{detailCandidate.overview}</p> : null}
-              </div>
-            </div>
-            {polExplanation ? (
-              <div className="recommendation-modal-pol">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img className="recommendation-modal-pol-icon" src="/resources/logopolwithcicle.png?v=2" alt="PolTV" />
-                <div>
-                  <strong>Pol&apos;s pick</strong>
-                  <span>{polExplanation}</span>
-                </div>
-              </div>
-            ) : null}
-            {onToggleSave ? (
-              <button type="button" className="primary-button recommendation-modal-save" onClick={() => onToggleSave(detailCandidate)}>
-                {detailIsSaved ? "🔖 Remove from My Picks" : "♡ Save to My Picks"}
-              </button>
-            ) : null}
-          </section>
-        </div>,
-        document.body,
+      {detailCandidate ? (
+        <RecommendationDetailsModal
+          candidate={detailCandidate}
+          polExplanation={polExplanation}
+          saved={Boolean(detailIsSaved)}
+          onClose={() => setDetailCandidate(null)}
+          onToggleSave={(candidate) => onToggleSave?.(candidate)}
+        />
       ) : null}
     </>
   );

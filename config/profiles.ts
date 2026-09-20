@@ -12,4 +12,4 @@ export const VIEWER_PROFILES: ViewerProfile[] = [
   { id: "ines", name: "Inés", role: "girl", image: "/resources/users/nena.png?v=2" },
 ];
 
-export const DEFAULT_VIEWER_PROFILE_ID = "amalia";
+export const DEFAULT_VIEWER_PROFILE_ID = "leo";

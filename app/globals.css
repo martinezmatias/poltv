@@ -21,7 +21,9 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .discovery-mode .media-stage-region { animation:discovery-media-in .42s ease both; }
 .discovery-recommendations { animation:discovery-rail-in .42s ease both; }
 .around-poltv { flex:0 0 78px; display:flex; align-items:center; gap:24px; padding:8px clamp(24px,5vw,82px); background:#0b0b0a; border-top:1px solid var(--line); overflow:hidden; }
-.around-heading { flex:0 0 118px; display:flex; align-items:center; justify-content:space-between; }
+.around-heading { flex:0 0 168px; display:flex; align-items:center; justify-content:space-between; }
+.around-heading-label { display:flex; align-items:center; gap:8px; min-width:0; }
+.around-poltv-icon { width:30px; height:30px; flex:0 0 30px; object-fit:contain; border-radius:50%; }
 .around-controls { display:flex; gap:4px; }
 .around-controls button { width:24px; height:24px; padding:0; border:1px solid var(--line); border-radius:50%; background:transparent; color:var(--muted); cursor:pointer; }
 .around-controls button:hover, .around-controls button:focus-visible { color:var(--ink); border-color:var(--accent); }
@@ -131,7 +133,7 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .recommendation-modal-meta { color:var(--accent); font-size:.82rem; line-height:1.45; }
 .recommendation-modal-overview { color:#d8d1c6; line-height:1.55; }
 .recommendation-modal-pol { display:flex; align-items:center; gap:14px; width:100%; margin:22px 0 0; padding:14px 16px; border-top:3px solid var(--accent); border-radius:5px; background:rgba(213,182,138,.1); color:var(--ink); line-height:1.4; }
-.recommendation-modal-pol-icon { width:64px; height:64px; flex:0 0 64px; object-fit:contain; border-radius:50%; }
+.recommendation-modal-pol-icon { width:128px; height:128px; flex:0 0 128px; object-fit:contain; border-radius:50%; }
 .recommendation-modal-pol div { display:grid; gap:5px; min-width:0; }
 .recommendation-modal-pol strong { color:var(--accent); text-transform:uppercase; letter-spacing:.1em; font-size:1.47rem; font-weight:700; }
 .recommendation-modal-pol span { font-size:1.23rem; }

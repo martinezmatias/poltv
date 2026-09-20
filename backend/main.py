@@ -93,6 +93,8 @@ class MediaOrchestratorState(BaseModel):
 class MediaDecision(BaseModel):
     action: Literal["none", "update"] = "none"
     visual_instruction: Optional[str] = None
+    resolved_cinematic_brief: Optional[str] = None
+    intent_change: Literal["modify", "reset"] = "modify"
     include_pol: bool = False
     pol_role: Literal["protagonist", "companion", "supporting", "none"] = "none"
     reason: str = ""
@@ -329,6 +331,46 @@ def preference_summary(preferences: List[str]) -> str:
     fragments = [re.sub(r"\s+", " ", item).strip(" .,!?") for item in preferences[-3:]]
     summary = " · ".join(fragment for fragment in fragments if fragment)
     return summary[:100] or "a great film or series"
+
+
+def fallback_visual_instruction(
+    state: MediaOrchestratorState,
+    session: ConversationSession,
+    resolved_brief: Optional[str] = None,
+) -> str:
+    brief = preference_summary(session.preferences)
+    assistant_interpretation = next(
+        (message.content for message in reversed(state.recent_messages) if message.role == "assistant"),
+        "the latest conversational interpretation",
+    )
+    inspirations = ", ".join(
+        f"{candidate.title} ({', '.join(candidate.genres[:2])})"
+        for candidate in state.recent_candidates[:3]
+    )
+    continuity = (
+        f"Continue and evolve the previous visual concept: {state.previous_visual_instruction}. "
+        if state.previous_visual_instruction else ""
+    )
+    return (
+        "Create an original, concrete cinematic scene from the resolved viewing brief, not from the latest user phrase alone. "
+        f"Resolved cinematic brief: {resolved_brief or brief}. "
+        f"Accumulated preference context: {brief}. Recent assistant interpretation: {assistant_interpretation}. {continuity}"
+        "Give the central character a clear physical objective, active movement, a setting with specific visual details, "
+        "and a visible obstacle or event. Use expressive cinematic camera movement and a coherent atmosphere. "
+        f"The current catalog titles are only broad tonal inspiration, never subjects to recreate: {inspirations or 'none'}. "
+        "Keep the scene original and preserve continuity with the current viewing experience."
+    )
+
+
+def is_shallow_visual_instruction(instruction: Optional[str], state: MediaOrchestratorState) -> bool:
+    if not instruction or len(instruction.strip()) < 140:
+        return True
+    normalized_instruction = re.sub(r"\s+", " ", instruction).strip().casefold()
+    latest_user = next(
+        (message.content for message in reversed(state.recent_messages) if message.role == "user"),
+        "",
+    )
+    return normalized_instruction == re.sub(r"\s+", " ", latest_user).strip().casefold()
 
 
 def parse_decision(content: object) -> AgentDecision:
@@ -848,6 +890,14 @@ def media_orchestrate(request: MediaOrchestratorRequest) -> MediaOrchestratorRes
     state_messages = json.dumps([message.model_dump() for message in state.recent_messages], ensure_ascii=False)
     state_candidates = json.dumps([candidate.model_dump() for candidate in state.recent_candidates], ensure_ascii=False)
     state_context = json.dumps(state.model_dump(), ensure_ascii=False)
+    session = store.get_or_create(request.session_id)
+    resolved_context = (
+        "Resolved application context (use this to interpret deltas):\n"
+        f"Accumulated preference summary: {preference_summary(session.preferences)}\n"
+        f"Recent preference fragments: {json.dumps(session.preferences[-6:], ensure_ascii=False)}\n"
+        f"Previous visual intent: {state.previous_visual_instruction or 'none'}\n"
+        "Treat the latest user turn as a modification of this context unless the conversation clearly resets direction."
+    )
     messages: List[dict[str, object]] = [
         {"role": "system", "content": MEDIA_ORCHESTRATOR_PROMPT},
         {
@@ -855,6 +905,7 @@ def media_orchestrate(request: MediaOrchestratorRequest) -> MediaOrchestratorRes
             "content": (
                 "Application state:\n"
                 f"{state_context}\n\n"
+                f"{resolved_context}\n\n"
                 f"Recent conversation:\n{state_messages}\n\n"
                 f"Current catalog candidates:\n{state_candidates}"
             ),
@@ -868,14 +919,11 @@ def media_orchestrate(request: MediaOrchestratorRequest) -> MediaOrchestratorRes
         raise HTTPException(status_code=502, detail=f"Media Orchestrator failed: {format_exception(exc)}") from exc
 
     if state.generation_policy == "aggressive":
-        if not decision.visual_instruction:
-            latest_user_message = next(
-                (message.content for message in reversed(state.recent_messages) if message.role == "user"),
-                "the viewer's latest request",
-            )
-            fallback_instruction = (
-                "An original cinematic visualization of the viewer's latest request: "
-                f"{latest_user_message}. Keep the scene coherent, visually rich, and centered on the current viewing mood."
+        if is_shallow_visual_instruction(decision.visual_instruction, state):
+            fallback_instruction = fallback_visual_instruction(
+                state,
+                session,
+                decision.resolved_cinematic_brief,
             )
         else:
             fallback_instruction = decision.visual_instruction

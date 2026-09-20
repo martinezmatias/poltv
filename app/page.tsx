@@ -47,6 +47,8 @@ type AgentDecision = {
 type MediaDecision = {
   action: "none" | "update";
   visual_instruction: string | null;
+  resolved_cinematic_brief: string | null;
+  intent_change: "modify" | "reset";
   include_pol: boolean;
   pol_role: PolRole;
   reason: string;
@@ -786,6 +788,9 @@ export default function Home() {
       if (!response.ok) throw new Error(formatApiError(payload.detail ?? `Media Orchestrator failed (${response.status})`));
       if (payload.action === "none") {
         logEvent(`Media Orchestrator: none${payload.reason ? ` (${payload.reason})` : ""}`);
+        if (payload.resolved_cinematic_brief) {
+          logEvent(`Cinematic intent ${payload.intent_change}: ${payload.resolved_cinematic_brief}`);
+        }
         return;
       }
       if (!payload.visual_instruction || !payload.media_action_id) {
@@ -806,6 +811,7 @@ export default function Home() {
       setGeneratedInstruction(finalPrompt);
       logEvent(`Media action source: ${generationPolicy === "aggressive" ? "aggressive_policy" : "media_orchestrator"}`);
       logEvent(`Media Orchestrator: update (${payload.media_action_id})`);
+      logEvent(`Cinematic intent ${payload.intent_change}: ${payload.resolved_cinematic_brief ?? "not returned"}`);
       logEvent(`Media intent: include_pol=${polIntent.includePol}, pol_role=${polIntent.polRole}, profile=${selectedProfile.id}, image_available=${Boolean(selectedProfile.image)}`);
       sendVideoInstruction(
         finalPrompt,

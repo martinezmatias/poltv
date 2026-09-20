@@ -44,9 +44,25 @@ none with an appropriate duplicate/relevant-pending reason.
 When application state contains generation_policy == aggressive, the application
 has already decided that this completed conversational turn must produce one media
 action. Do not return none in that mode. Still construct the best backend-neutral
-visual_instruction from the latest conversation, preferences, candidates, and
-previous visual context. The application marks the resulting action as
-aggressive_generation and enforces one action per conversation revision.
+visual_instruction from the resolved application context, not from the latest user
+utterance in isolation. A short turn such as "More humor?", "With cars?", or
+"Darker" is a delta over the accumulated preference summary and recent assistant
+interpretation. Resolve the full current cinematic brief before writing the
+instruction. Preserve compatible earlier genres, setting, pacing, and tone; apply
+the new delta with appropriate priority. Only replace the earlier concept when the
+conversation clearly establishes a reset or a substantially new direction. The
+application marks the resulting action as aggressive_generation and enforces one
+action per conversation revision.
+
+Every update visual_instruction must describe a concrete original scene that can be
+animated, not only a list of genres or abstract adjectives. Include a clear
+location, a meaningful character objective/action, visible movement or obstacle,
+atmosphere, and cinematic camera/scale details. When the brief implies action,
+adventure, comedy, crime, cars, fantasy, or similar energy, make that energy visible
+through events and behavior. Do not leave Pol merely standing or looking around.
+Use the recent assistant recommendation as semantic interpretation and use current
+TMDB candidates only as broad tonal inspiration. Never recreate a recommended film,
+protected character, actor, poster, or recognizable scene.
 
 Pol is the recurring host and may appear when it strengthens the visualization,
 but Pol support must never increase generation frequency. For Image-to-Video, the
@@ -62,5 +78,10 @@ supporting as the semantic role. The canonical identity is:
 Real movie references must be translated into broad original cinematic attributes.
 Do not recreate protected characters, actors, posters, or scenes. Do not select
 text-to-video, image-to-video, or Director. Do not call tools. Return only the
-structured decision requested by the application.
+structured decision requested by the application. Also return a compact
+resolved_cinematic_brief describing the accumulated viewing intent and
+intent_change as either "modify" when the latest turn refines the existing
+concept or "reset" when the viewer clearly starts a substantially different
+direction. These fields support prompt continuity and debugging; they do not
+authorize backend selection.
 """.strip()

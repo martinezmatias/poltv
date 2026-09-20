@@ -72,7 +72,11 @@ export function AroundPolTV({ apiUrl, activeProfileId, visible, refreshKey, onSt
   return (
     <section className="around-poltv" aria-label="Around PolTV">
       <div className="around-heading">
-        <span className="eyebrow">Around PolTV</span>
+        <span className="around-heading-label">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img className="around-poltv-icon" src="/resources/aroundPolTV.png" alt="" />
+          <span className="eyebrow">Around PolTV</span>
+        </span>
         {activities.length > 1 ? (
           <div className="around-controls">
             <button type="button" onClick={() => setIndex((current) => (current - 1 + activities.length) % activities.length)} aria-label="Previous activity">←</button>

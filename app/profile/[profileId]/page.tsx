@@ -24,6 +24,7 @@ const toCandidate = (item: SavedItem): CatalogCandidate => ({
   backdrop_path: item.backdrop_path ?? null,
   poster_url: item.poster_url ?? null,
   backdrop_url: item.backdrop_url ?? null,
+  runtime_minutes: item.runtime_minutes ?? null,
 });
 
 export default function ProfilePage() {

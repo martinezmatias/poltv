@@ -86,6 +86,7 @@ export async function resolveMovie(title) {
     backdrop_path: typeof details.backdrop_path === "string" ? details.backdrop_path : null,
     poster_url: imageUrl(details.poster_path, "w500"),
     backdrop_url: imageUrl(details.backdrop_path, "w780"),
+    runtime_minutes: typeof details.runtime === "number" && details.runtime > 0 ? details.runtime : null,
   };
 }
 

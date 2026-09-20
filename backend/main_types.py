@@ -35,6 +35,7 @@ class CatalogCandidate(BaseModel):
     backdrop_path: Optional[str] = None
     poster_url: Optional[str] = None
     backdrop_url: Optional[str] = None
+    runtime_minutes: Optional[int] = None
 
 
 class CatalogSelection(BaseModel):

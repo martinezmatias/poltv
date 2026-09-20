@@ -20,6 +20,7 @@ class TMDBClient:
     def __init__(self, access_token: str) -> None:
         self.access_token = access_token
         self._genre_cache: Dict[str, Dict[str, int]] = {}
+        self._details_cache: Dict[Tuple[str, int], Dict[str, Any]] = {}
 
     def _image_configuration(self) -> Tuple[str, List[str], List[str]]:
         try:
@@ -90,6 +91,13 @@ class TMDBClient:
         results = payload.get("results")
         return results if isinstance(results, list) else []
 
+    def _details(self, media_type: str, item_id: int) -> Dict[str, Any]:
+        key = (media_type, item_id)
+        if key not in self._details_cache:
+            path = f"/movie/{item_id}" if media_type == "movie" else f"/tv/{item_id}"
+            self._details_cache[key] = self._request(path, {"language": "en-US"})
+        return self._details_cache[key]
+
     def _discover(self, media_type: str, query: CatalogQuery) -> List[Dict[str, Any]]:
         params: Dict[str, Any] = {"include_adult": False, "sort_by": "popularity.desc"}
         if query.genres:
@@ -156,6 +164,19 @@ class TMDBClient:
             backdrop_url=self._image_url(base_url, backdrop_sizes, backdrop_path, "w780"),
         )
 
+    def _enrich_runtime(self, candidate: CatalogCandidate) -> CatalogCandidate:
+        try:
+            details = self._details(candidate.media_type, candidate.tmdb_id)
+            if candidate.media_type == "movie":
+                runtime = details.get("runtime")
+            else:
+                runtimes = details.get("episode_run_time")
+                runtime = runtimes[0] if isinstance(runtimes, list) and runtimes else None
+            runtime_minutes = int(runtime) if isinstance(runtime, (int, float)) and runtime > 0 else None
+            return candidate.model_copy(update={"runtime_minutes": runtime_minutes})
+        except (TMDBError, TypeError, ValueError):
+            return candidate
+
     def _normalize_many(
         self,
         items: Iterable[Dict[str, Any]],
@@ -200,4 +221,4 @@ class TMDBClient:
             if key not in seen:
                 seen.add(key)
                 unique.append(candidate)
-        return unique[:8]
+        return [self._enrich_runtime(candidate) for candidate in unique[:8]]

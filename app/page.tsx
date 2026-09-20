@@ -148,6 +148,7 @@ export default function Home() {
     error: string | null;
   } | null>(null);
   const [recommendations, setRecommendations] = useState<CatalogCandidate[]>([]);
+  const [recommendationExplanation, setRecommendationExplanation] = useState<string | null>(null);
   const [activityRefreshKey, setActivityRefreshKey] = useState(0);
   const [aroundStatus, setAroundStatus] = useState("Waiting for recommendation activity.");
   const [savedRecommendationKeys, setSavedRecommendationKeys] = useState<Set<string>>(new Set());
@@ -890,6 +891,7 @@ export default function Home() {
           error: catalogError,
         });
         if (payload.catalog_retrieved) setRecommendations(catalogCandidates);
+        if (catalogCandidates.length > 0) setRecommendationExplanation(payload.reply);
         logEvent(`TMDB called with input: ${JSON.stringify(catalogQuery)}`);
         logEvent(
           catalogError
@@ -1063,6 +1065,7 @@ export default function Home() {
                 disabled={agentLoading}
                 savedKeys={savedRecommendationKeys}
                 onToggleSave={(candidate) => void toggleSavedRecommendation(candidate)}
+                polExplanation={recommendationExplanation ?? undefined}
               />
             </div>
           ) : null}

@@ -13,4 +13,5 @@ export type CatalogCandidate = {
   backdrop_path: string | null;
   poster_url: string | null;
   backdrop_url: string | null;
+  runtime_minutes?: number | null;
 };

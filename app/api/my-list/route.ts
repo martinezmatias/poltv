@@ -14,6 +14,7 @@ type SavedRecommendation = {
   backdrop_path: string | null;
   poster_url: string | null;
   backdrop_url: string | null;
+  runtime_minutes?: number | null;
 };
 
 const DATA_DIR = path.join(process.cwd(), "data", "users");
@@ -76,6 +77,7 @@ function validateItem(value: unknown): SavedRecommendation | null {
     backdrop_path: item.backdrop_path ?? null,
     poster_url: item.poster_url ?? null,
     backdrop_url: item.backdrop_url ?? null,
+    runtime_minutes: item.runtime_minutes ?? null,
   };
 }
 

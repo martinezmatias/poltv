@@ -39,6 +39,8 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .discovery-mode .stage-caption h1 { font-size:clamp(2rem,3.8vw,4.2rem); }
 .eyebrow, .message-label, .stage-label, .rail-count { color:var(--muted); text-transform:uppercase; letter-spacing:.14em; font-size:.67rem; font-weight:600; }
 .profile-selector { position:relative; align-self:flex-start; }
+.conversation-brand-row { display:flex; align-items:center; gap:12px; min-height:42px; }
+.conversation-brand-logo { width:55px; height:55px; object-fit:contain; border-radius:50%; }
 .profile-trigger { display:flex; align-items:center; gap:11px; }
 .profile-avatar-link { display:block; border-radius:50%; }
 .profile-name-trigger { display:flex; align-items:center; gap:11px; border:0; background:transparent; padding:0; cursor:pointer; color:inherit; text-align:left; }
@@ -138,6 +140,7 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, summary:focu
 .profile-page-header h1 { margin:0; font-family:"Playfair Display",Georgia,serif; font-weight:500; font-size:clamp(2rem,4vw,4rem); }
 .my-list-section { max-width:1100px; margin:0 auto; }
 .my-list-section h2 { margin:0 0 18px; font-family:"Playfair Display",Georgia,serif; font-size:clamp(1.6rem,3vw,2.5rem); font-weight:500; }
+.my-list-subtitle { color:var(--muted); }
 .my-list-section .recommendation-rail { position:relative; inset:auto; }
 .profile-empty-state { max-width:420px; color:var(--muted); line-height:1.6; }
 .settings-actions { display:flex; gap:8px; margin-top:18px; }

@@ -16,10 +16,12 @@ export function RecommendationRail({ recommendations, onSelect, disabled = false
 
   return (
     <section className="recommendation-rail" aria-label="Recommendations">
-      <div className="rail-heading">
-        <span className="eyebrow">{heading}</span>
-        <span className="rail-count">{recommendations.length} picks</span>
-      </div>
+      {heading ? (
+        <div className="rail-heading">
+          <span className="eyebrow">{heading}</span>
+          <span className="rail-count">{recommendations.length} picks</span>
+        </div>
+      ) : null}
       <div className="recommendation-row">
         {recommendations.map((candidate) => (
           <article
@@ -42,8 +44,8 @@ export function RecommendationRail({ recommendations, onSelect, disabled = false
               <button
                 type="button"
                 className={`save-button${savedKeys?.has(`${candidate.media_type}-${candidate.tmdb_id}`) ? " saved" : ""}`}
-                aria-label={savedKeys?.has(`${candidate.media_type}-${candidate.tmdb_id}`) ? `Remove ${candidate.title} from My List` : `Save ${candidate.title} to My List`}
-                title={savedKeys?.has(`${candidate.media_type}-${candidate.tmdb_id}`) ? "Remove from My List" : "Save to My List"}
+                aria-label={savedKeys?.has(`${candidate.media_type}-${candidate.tmdb_id}`) ? `Remove ${candidate.title} from My Picks` : `Save ${candidate.title} to My Picks`}
+                title={savedKeys?.has(`${candidate.media_type}-${candidate.tmdb_id}`) ? "Remove from My Picks" : "Save to My Picks"}
                 onClick={() => onToggleSave(candidate)}
               >
                 {savedKeys?.has(`${candidate.media_type}-${candidate.tmdb_id}`) ? "🔖" : "♡"}

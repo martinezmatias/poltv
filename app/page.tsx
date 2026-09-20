@@ -987,7 +987,11 @@ export default function Home() {
     <CinematicShell
       conversation={(
         <>
-          <ProfileSelector selectedId={selectedProfileId} onSelect={selectProfile} />
+          <div className="conversation-brand-row">
+            <ProfileSelector selectedId={selectedProfileId} onSelect={selectProfile} />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img className="conversation-brand-logo" src="/resources/logopolwithcicle.png" alt="PolTV" />
+          </div>
           <div className="conversation-intro">
             <h1>{INITIAL_ASSISTANT_MESSAGE}</h1>
           </div>

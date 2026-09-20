@@ -90,10 +90,10 @@ export default function ProfilePage() {
         <h1>{profile.name}</h1>
       </header>
       <section className="my-list-section" aria-labelledby="my-list-title">
-        <h2 id="my-list-title">My List</h2>
+        <h2 id="my-list-title">My Picks<span className="my-list-subtitle">, saved from Pol’s recommendations</span></h2>
         {loading ? <p className="muted">Loading your list…</p> : null}
         {!loading && !error && items.length === 0 ? (
-          <p className="profile-empty-state">Your list is empty. Save movies and series from your recommendations to find them here.</p>
+          <p className="profile-empty-state">Your picks are empty. Save movies and series from Pol’s recommendations to find them here.</p>
         ) : null}
         {error ? <p className="error-note" role="alert">{error}</p> : null}
         {!loading && items.length > 0 ? (
@@ -102,7 +102,7 @@ export default function ProfilePage() {
             onSelect={() => undefined}
             savedKeys={savedKeys}
             onToggleSave={removeItem}
-            heading="Saved for you"
+            heading=""
           />
         ) : null}
       </section>
